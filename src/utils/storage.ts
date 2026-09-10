@@ -81,31 +81,24 @@ export function safeRemoveItem(key: string): void {
 export function getStoredStudents(): StudentData[] {
   const data = safeGetItem(KEYS.STUDENTS);
   if (!data) {
-    safeSetItem(KEYS.STUDENTS, JSON.stringify(initialStudents));
-    syncStudentsToSupabase(initialStudents);
-    return initialStudents;
+    return [];
   }
   try {
     const parsed = JSON.parse(data);
     if (Array.isArray(parsed)) {
-      if (parsed.some((s) => s.id === 'std_001' || s.id === 'std_002' || s.userEmail === 'fathan.alkhatiri@gmail.com')) {
-        const cleaned = parsed.filter((s) => !s.id.startsWith('std_00') && s.userEmail !== 'fathan.alkhatiri@gmail.com');
-        safeSetItem(KEYS.STUDENTS, JSON.stringify(cleaned));
-        syncStudentsToSupabase(cleaned);
-        return cleaned;
-      }
-      return parsed;
+      // Filter out legacy demo student accounts if present
+      const cleaned = parsed.filter((s) => !s.id.startsWith('std_00') && s.userEmail !== 'fathan.alkhatiri@gmail.com');
+      return cleaned;
     }
-    return initialStudents;
+    return [];
   } catch {
-    return initialStudents;
+    return [];
   }
 }
 
 export function saveStudents(students: StudentData[]): void {
   safeSetItem(KEYS.STUDENTS, JSON.stringify(students));
   updateClassQuotaCounts(students);
-  syncStudentsToSupabase(students);
 }
 
 export function getStoredClassQuotas(): ClassQuota[] {
@@ -287,7 +280,7 @@ export function setCurrentUser(user: UserAccount | null): void {
   } else {
     // Ensure plaintext password is never stored in current user session
     const sanitizedUser = { ...user };
-    delete sanitizedUser.password;
+    delete (sanitizedUser as any).password;
     safeSetItem(KEYS.CURRENT_USER, JSON.stringify(sanitizedUser));
   }
 }
@@ -295,83 +288,33 @@ export function setCurrentUser(user: UserAccount | null): void {
 export function getUsersDb(): UserAccount[] {
   const data = safeGetItem(KEYS.USERS_DB);
   if (!data) {
-    const defaultUsers: UserAccount[] = [
-      { id: 'usr_superadmin', name: 'Super Admin SPMB', email: 'superadmin@alhadiid.sch.id', username: 'superadmin', phone: '081234567899', role: 'super_admin', password: 'superadmin123', status: 'active', createdAt: '2027-01-01' },
-      { id: 'usr_admin', name: 'Panitia SPMB', email: 'admin@alhadiid.sch.id', username: 'admin', phone: '081234567890', role: 'admin', password: 'admin123', status: 'active', createdAt: '2027-01-01' },
-      { id: 'usr_kepsek', name: 'Dr. H. Ahmad Dahlan, M.Pd.', email: 'kepsek@alhadiid.sch.id', username: 'kepsek', phone: '081299887766', role: 'kepsek', password: 'kepsek123', status: 'active', createdAt: '2027-01-01' },
-    ];
-    safeSetItem(KEYS.USERS_DB, JSON.stringify(defaultUsers));
-    syncUsersDbToSupabase(defaultUsers);
-    return defaultUsers;
+    return [];
   }
   try {
-    let parsed: UserAccount[] = JSON.parse(data);
+    const parsed: UserAccount[] = JSON.parse(data);
     if (!Array.isArray(parsed)) return [];
 
-    // Filter out legacy demo student accounts
-    if (parsed.some((u) => u.id === 'std_001' || u.id === 'std_002' || u.email === 'fathan.alkhatiri@gmail.com')) {
-      parsed = parsed.filter((u) => u.id !== 'std_001' && u.id !== 'std_002' && u.email !== 'fathan.alkhatiri@gmail.com');
-      safeSetItem(KEYS.USERS_DB, JSON.stringify(parsed));
-      syncUsersDbToSupabase(parsed);
-    }
-
-    let updated = false;
-
-    // Ensure super_admin account exists
-    if (!parsed.some(u => u.role === 'super_admin' || u.email === 'superadmin@alhadiid.sch.id' || u.username === 'superadmin')) {
-      parsed.unshift({ id: 'usr_superadmin', name: 'Super Admin SPMB', email: 'superadmin@alhadiid.sch.id', username: 'superadmin', phone: '081234567899', role: 'super_admin', password: 'superadmin123', status: 'active', createdAt: '2027-01-01' });
-      updated = true;
-    }
-
-    // Ensure admin account exists
-    if (!parsed.some(u => u.role === 'admin' || u.email === 'admin@alhadiid.sch.id')) {
-      parsed.push({ id: 'usr_admin', name: 'Panitia SPMB', email: 'admin@alhadiid.sch.id', username: 'admin', phone: '081234567890', role: 'admin', password: 'admin123', status: 'active', createdAt: '2027-01-01' });
-      updated = true;
-    }
-
-    // Ensure kepsek account exists
-    if (!parsed.some(u => u.role === 'kepsek' || u.email === 'kepsek@alhadiid.sch.id')) {
-      parsed.push({ id: 'usr_kepsek', name: 'Dr. H. Ahmad Dahlan, M.Pd.', email: 'kepsek@alhadiid.sch.id', username: 'kepsek', phone: '081299887766', role: 'kepsek', password: 'kepsek123', status: 'active', createdAt: '2027-01-01' });
-      updated = true;
-    }
-
-    const result = parsed.map(u => {
-      const copy = { ...u };
-      if (copy.id === 'usr_superadmin' || copy.email?.toLowerCase() === 'superadmin@alhadiid.sch.id' || copy.username?.toLowerCase() === 'superadmin') {
-        if (copy.role !== 'super_admin') {
-          copy.role = 'super_admin';
-          updated = true;
-        }
-      }
-      if (!copy.password) {
-        if (copy.role === 'super_admin') copy.password = 'superadmin123';
-        else if (copy.role === 'admin') copy.password = 'admin123';
-        else if (copy.role === 'kepsek') copy.password = 'kepsek123';
-        else if (copy.role === 'student') copy.password = '123456';
-        updated = true;
-      }
-      if (copy.status === 'disabled' && copy.role === 'super_admin') {
-        copy.status = 'active';
-        updated = true;
-      }
-      if (copy.role === 'student' && !copy.username) {
-        copy.username = copy.email ? copy.email.split('@')[0].toLowerCase() : `user_${copy.id}`;
-        updated = true;
-      }
-      return copy;
-    });
-    if (updated) {
-      safeSetItem(KEYS.USERS_DB, JSON.stringify(result));
-    }
-    return result;
+    // Filter out legacy demo student accounts & sanitize passwords
+    return parsed
+      .filter((u) => !u.id.startsWith('std_00') && u.email !== 'fathan.alkhatiri@gmail.com')
+      .map(u => {
+        const copy = { ...u };
+        delete (copy as any).password;
+        return copy;
+      });
   } catch {
     return [];
   }
 }
 
 export function saveUsersDb(users: UserAccount[]): void {
-  safeSetItem(KEYS.USERS_DB, JSON.stringify(users));
-  syncUsersDbToSupabase(users);
+  // Sanitize passwords before saving to local storage
+  const sanitized = users.map(u => {
+    const copy = { ...u };
+    delete (copy as any).password;
+    return copy;
+  });
+  safeSetItem(KEYS.USERS_DB, JSON.stringify(sanitized));
 }
 
 export function saveUserToDb(user: UserAccount): void {
@@ -470,46 +413,9 @@ export function deleteUserFromDb(userId: string): void {
   deleteUserFromSupabase(userId, target?.email);
 }
 
-export function ensureStudentDataExists(user: UserAccount, existingStudents: StudentData[]): StudentData[] {
-  if (user.role !== 'student') return existingStudents;
-  const found = existingStudents.find(
-    s => s.id === user.id || s.userEmail.toLowerCase() === user.email.toLowerCase()
-  );
-  if (found) return existingStudents;
-
-  const newStudent: StudentData = {
-    id: user.id || `std_${Date.now()}`,
-    registrationNumber: user.registrationNumber || `SPMB2027${Math.floor(1000 + Math.random() * 9000)}`,
-    status: 'draft',
-    userEmail: user.email.toLowerCase(),
-    createdAt: user.createdAt || new Date().toISOString(),
-    fullName: user.name,
-    phone: user.phone || '081234567890',
-    formPaymentAmount: 200000,
-    formPaymentStatus: 'unpaid',
-    nik: '',
-    birthPlace: 'Bogor',
-    birthDate: '2013-01-01',
-    gender: 'Laki-laki',
-    religion: 'Islam',
-    address: 'Cileungsi, Bogor',
-    subdistrict: 'Cileungsi',
-    city: 'Kabupaten Bogor',
-    province: 'Jawa Barat',
-    previousSchoolName: '',
-    fatherName: '',
-    fatherPhone: user.phone || '081234567890',
-    fatherEducation: 'S1',
-    initialPaymentStatus: 'unpaid',
-    initialPaymentAmount: 8500000,
-    motherName: '',
-    motherJob: 'Ibu Rumah Tangga',
-    motherPhone: user.phone || '081234567890',
-  };
-
-  const updated = [newStudent, ...existingStudents];
-  saveStudents(updated);
-  return updated;
+export function ensureStudentDataExists(_user: UserAccount, existingStudents: StudentData[]): StudentData[] {
+  // Neutralized per Security Audit Tahap 3: Do not resurrect or auto-generate dummy student records
+  return existingStudents;
 }
 
 export async function loadDataFromSupabase(): Promise<{
@@ -551,17 +457,18 @@ export async function loadDataFromSupabase(): Promise<{
     fetchWebsiteConfigFromSupabase(),
   ]);
 
-  if (students && students.length > 0) safeSetItem(KEYS.STUDENTS, JSON.stringify(students));
-  if (classQuotas && classQuotas.length > 0) safeSetItem(KEYS.CLASS_QUOTAS, JSON.stringify(classQuotas));
-  if (schoolInfo) safeSetItem(KEYS.SCHOOL_INFO, JSON.stringify(schoolInfo));
-  if (usersDb && usersDb.length > 0) safeSetItem(KEYS.USERS_DB, JSON.stringify(usersDb));
-  if (formPayments && formPayments.length > 0) safeSetItem(KEYS.FORM_PAYMENTS, JSON.stringify(formPayments));
-  if (bamPayments && bamPayments.length > 0) safeSetItem(KEYS.BAM_PAYMENTS, JSON.stringify(bamPayments));
-  if (costBreakdown && costBreakdown.length > 0) safeSetItem(KEYS.COST_BREAKDOWN, JSON.stringify(costBreakdown));
-  if (testSchedules && testSchedules.length > 0) safeSetItem(KEYS.TEST_SCHEDULES, JSON.stringify(testSchedules));
-  if (questionBank && questionBank.length > 0) safeSetItem(KEYS.QUESTION_BANK, JSON.stringify(questionBank));
-  if (gasConfig) safeSetItem(KEYS.GAS_CONFIG, JSON.stringify(gasConfig));
-  if (websiteConfig) safeSetItem(KEYS.WEBSITE_CONFIG, JSON.stringify(websiteConfig));
+  // Treat empty arrays as valid responses from Supabase (Tahap 2 requirement)
+  if (students !== null) safeSetItem(KEYS.STUDENTS, JSON.stringify(students));
+  if (classQuotas !== null) safeSetItem(KEYS.CLASS_QUOTAS, JSON.stringify(classQuotas));
+  if (schoolInfo !== null) safeSetItem(KEYS.SCHOOL_INFO, JSON.stringify(schoolInfo));
+  if (usersDb !== null) safeSetItem(KEYS.USERS_DB, JSON.stringify(usersDb));
+  if (formPayments !== null) safeSetItem(KEYS.FORM_PAYMENTS, JSON.stringify(formPayments));
+  if (bamPayments !== null) safeSetItem(KEYS.BAM_PAYMENTS, JSON.stringify(bamPayments));
+  if (costBreakdown !== null) safeSetItem(KEYS.COST_BREAKDOWN, JSON.stringify(costBreakdown));
+  if (testSchedules !== null) safeSetItem(KEYS.TEST_SCHEDULES, JSON.stringify(testSchedules));
+  if (questionBank !== null) safeSetItem(KEYS.QUESTION_BANK, JSON.stringify(questionBank));
+  if (gasConfig !== null) safeSetItem(KEYS.GAS_CONFIG, JSON.stringify(gasConfig));
+  if (websiteConfig !== null) safeSetItem(KEYS.WEBSITE_CONFIG, JSON.stringify(websiteConfig));
 
   return {
     students,

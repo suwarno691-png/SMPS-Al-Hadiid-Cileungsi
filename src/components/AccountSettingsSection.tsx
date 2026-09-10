@@ -164,15 +164,6 @@ export const AccountSettingsSection: React.FC<AccountSettingsSectionProps> = ({
 
   // Handle Edit/Reset Password
   const handleOpenEditPassword = async (user: UserAccount) => {
-    // Try to ensure active Supabase session in background if possible
-    const { data: { session } } = await supabase.auth.getSession();
-    if (!session && currentUser && currentUser.password) {
-      await ensureSupabaseAuthSession(
-        currentUser.email,
-        currentUser.password,
-        currentUser
-      );
-    }
     setSelectedUser(user);
     setOldPassword('');
     setNewPassword('');
@@ -199,16 +190,6 @@ export const AccountSettingsSection: React.FC<AccountSettingsSectionProps> = ({
     if (newPassword !== confirmPassword) {
       setFormError('Konfirmasi password tidak sesuai.');
       return;
-    }
-
-    // Try background refresh of Supabase session if password is present
-    const { data: { session } } = await supabase.auth.getSession();
-    if (!session && currentUser && currentUser.password) {
-      await ensureSupabaseAuthSession(
-        currentUser.email,
-        currentUser.password,
-        currentUser
-      );
     }
 
     // SweetAlert2 Confirmation
@@ -240,18 +221,18 @@ export const AccountSettingsSection: React.FC<AccountSettingsSectionProps> = ({
       return;
     }
 
-    // Local DB Update with new password
+    // Local DB Update without plaintext password
     const allUsers = getUsersDb();
     const updatedUsers = allUsers.map(u =>
       u.id === selectedUser.id
-        ? { ...u, password: newPassword, mustChangePassword: false }
+        ? { ...u, mustChangePassword: false }
         : u
     );
     saveUsersDb(updatedUsers);
 
     // Update currentUser in localStorage if updating own password
     if (currentUser && selectedUser.id === currentUser.id) {
-      const updatedSelf = { ...currentUser, password: newPassword, mustChangePassword: false };
+      const updatedSelf = { ...currentUser, mustChangePassword: false };
       saveUserToDb(updatedSelf);
     }
 

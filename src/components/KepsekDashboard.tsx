@@ -2,8 +2,10 @@ import React from 'react';
 import { StudentData, ClassQuota, SchoolInfo, UserAccount } from '../types';
 import { exportToExcel } from '../utils/excelExporter';
 import { generateReportPDF } from '../utils/pdfGenerator';
+import { getKepalaSekolahName } from '../utils/storage';
 import { KepsekPaymentReportSection } from './payment/KepsekPaymentReportSection';
 import { FilledClassesSection } from './FilledClassesSection';
+import { SupabaseSyncButton } from './SupabaseSyncButton';
 import {
   BarChart3, PieChart, Users, Award, School, Download, FileSpreadsheet,
   CheckCircle2, TrendingUp, ShieldCheck, FileText, ArrowUpRight
@@ -53,7 +55,8 @@ export const KepsekDashboard: React.FC<KepsekDashboardProps> = ({
     generateReportPDF(
       `Laporan_Eksekutif_Kepala_Sekolah_TP_${schoolInfo.academicYear.replace('/', '_')}`,
       reportData,
-      ['No_Pendaftaran', 'Nama_Siswa', 'Sekolah_Asal', 'Nilai_Akhir', 'Status_Kelulusan', 'Daftar_Ulang', 'Kelas']
+      ['No_Pendaftaran', 'Nama_Siswa', 'Sekolah_Asal', 'Nilai_Akhir', 'Status_Kelulusan', 'Daftar_Ulang', 'Kelas'],
+      schoolInfo
     );
   };
 
@@ -120,6 +123,8 @@ export const KepsekDashboard: React.FC<KepsekDashboardProps> = ({
           </div>
 
           <div className="flex items-center gap-2">
+            <SupabaseSyncButton variant="header" onDataSynced={onRefreshAllData} />
+
             <button
               onClick={handleExportKepsekPDF}
               className="px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs rounded-xl shadow-sm transition-all flex items-center gap-1.5"
@@ -272,9 +277,11 @@ export const KepsekDashboard: React.FC<KepsekDashboardProps> = ({
             <div className="text-center space-y-1">
               <div>Cileungsi, {new Date().toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' })}</div>
               <div className="font-bold text-slate-900 pt-8 border-b border-slate-800">
-                Herman Jayusman, S.Pd.I.
+                {getKepalaSekolahName(schoolInfo)}
               </div>
-              <div className="text-[11px] text-slate-500">Kepala Sekolah SMP Al-Hadiid Cileungsi</div>
+              <div className="text-[11px] text-slate-500">
+                {schoolInfo.headmasterNiy ? `NIY. ${schoolInfo.headmasterNiy}` : 'Kepala Sekolah SMP Al-Hadiid Cileungsi'}
+              </div>
             </div>
           </div>
         </div>

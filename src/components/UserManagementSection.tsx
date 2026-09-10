@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { UserAccount, UserRole, StudentData } from '../types';
-import { getUsersDb, saveUserToDb, deleteUserFromDb, saveUsersDb, ensureStudentDataExists, setCurrentUser } from '../utils/storage';
+import { getUsersDb, saveUserToDb, deleteUserFromDb, saveUsersDb, setCurrentUser } from '../utils/storage';
 import { signUpWithSupabase, updateUserAccountCredentials } from '../utils/supabaseClient';
 import Swal from 'sweetalert2';
 import {
@@ -53,21 +53,23 @@ export const UserManagementSection: React.FC<UserManagementSectionProps> = ({
 
   // Sync Student accounts to Students list rekap
   const handleSyncStudentData = () => {
-    let currentStudents = [...students];
-    const studentUsers = users.filter(u => u.role === 'student');
-    let addedCount = 0;
-
-    studentUsers.forEach(su => {
-      const initialLength = currentStudents.length;
-      currentStudents = ensureStudentDataExists(su, currentStudents);
-      if (currentStudents.length > initialLength) {
-        addedCount++;
+    let hasChanges = false;
+    const updatedStudents = students.map(st => {
+      const matchingUser = users.find(u => u.email.toLowerCase() === st.userEmail.toLowerCase());
+      if (matchingUser && (st.fullName !== matchingUser.name || (matchingUser.phone && st.phone !== matchingUser.phone))) {
+        hasChanges = true;
+        return {
+          ...st,
+          fullName: matchingUser.name || st.fullName,
+          phone: matchingUser.phone || st.phone,
+        };
       }
+      return st;
     });
 
-    if (addedCount > 0) {
-      onUpdateStudents(currentStudents);
-      setSuccessMsg(`✓ Berhasil menyinkronkan ${addedCount} akun calon murid baru ke rekap data pendaftar!`);
+    if (hasChanges) {
+      onUpdateStudents(updatedStudents);
+      setSuccessMsg(`✓ Berhasil menyelaraskan data pendaftar dengan akun siswa terdaftar.`);
     } else {
       setSuccessMsg('✓ Seluruh data akun calon murid telah tersinkronisasi lengkap dengan rekap pendaftar.');
     }
@@ -109,7 +111,7 @@ export const UserManagementSection: React.FC<UserManagementSectionProps> = ({
       email: user.email,
       phone: user.phone || '',
       role: user.role,
-      password: user.password || '',
+      password: '',
       status: user.status || 'active',
     });
     setErrMsg('');
@@ -149,7 +151,12 @@ export const UserManagementSection: React.FC<UserManagementSectionProps> = ({
       return;
     }
 
-    const initialPassword = formData.password.trim() || '123456';
+    if (!formData.password || formData.password.trim().length < 8) {
+      setErrMsg('Password awal akun wajib diisi (minimal 8 karakter)!');
+      return;
+    }
+
+    const initialPassword = formData.password.trim();
     const cleanEmail = formData.email.toLowerCase().trim();
 
     const res = await signUpWithSupabase({
@@ -167,7 +174,6 @@ export const UserManagementSection: React.FC<UserManagementSectionProps> = ({
       username: cleanEmail.split('@')[0],
       phone: formData.phone.trim(),
       role: formData.role,
-      password: initialPassword,
       status: formData.status || 'active',
       createdAt: new Date().toISOString(),
     };
@@ -728,10 +734,11 @@ export const UserManagementSection: React.FC<UserManagementSectionProps> = ({
               </div>
 
               <div>
-                <label className="block font-bold text-slate-700 mb-1">Password Awal Akun:</label>
+                <label className="block font-bold text-slate-700 mb-1">Password Awal Akun (Wajib, min. 8 karakter):</label>
                 <input
-                  type="text"
-                  placeholder="Default: 123456"
+                  type="password"
+                  required
+                  placeholder="Masukkan password baru (min. 8 karakter)..."
                   value={formData.password}
                   onChange={(e) => setFormData({ ...formData, password: e.target.value })}
                   className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl font-medium focus:ring-2 focus:ring-blue-500"

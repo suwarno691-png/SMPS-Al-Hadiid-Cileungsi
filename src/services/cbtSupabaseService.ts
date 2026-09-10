@@ -23,8 +23,8 @@ export async function fetchKategoriSoalSupabase(): Promise<CbtKategori[]> {
       .select('*')
       .order('created_at', { ascending: true });
 
-    if (error || !data || data.length === 0) {
-      console.warn('Supabase fetch kategori_soal fallback to localStorage:', error?.message);
+    if (error || !data) {
+      console.warn('Supabase fetch kategori_soal error:', error?.message);
       return getCbtKategori();
     }
 
@@ -141,8 +141,8 @@ export async function fetchSoalSupabase(): Promise<CbtSoal[]> {
       .select('*')
       .order('created_at', { ascending: false });
 
-    if (error || !data || data.length === 0) {
-      console.warn('Supabase fetch soal fallback to localStorage:', error?.message);
+    if (error || !data) {
+      console.warn('Supabase fetch soal error:', error?.message);
       return getCbtSoal();
     }
 
@@ -378,8 +378,8 @@ export async function fetchUjianSupabase(): Promise<CbtUjian[]> {
       .select('*')
       .order('created_at', { ascending: false });
 
-    if (error || !data || data.length === 0) {
-      console.warn('Supabase fetch ujian fallback to localStorage:', error?.message);
+    if (error || !data) {
+      console.warn('Supabase fetch ujian error:', error?.message);
       return getCbtUjian();
     }
 
@@ -611,7 +611,7 @@ export async function fetchHasilUjianSupabase(pesertaId?: string): Promise<CbtHa
     }
 
     const { data, error } = await query;
-    if (error || !data || data.length === 0) {
+    if (error || !data) {
       const local = getCbtHasilUjian();
       return pesertaId ? local.filter((h) => h.pesertaId === pesertaId) : local;
     }

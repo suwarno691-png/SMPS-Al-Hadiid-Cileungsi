@@ -5,16 +5,23 @@ import {
   ExamQuestion, WebsiteConfig
 } from '../types';
 
-export const SUPABASE_PROJECT_NAME = 'SPMB 2027-2028';
-export const SUPABASE_PROJECT_ID = 'fjscuokehikwhungyvll';
+const envUrl = (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_SUPABASE_URL) || '';
+const envKey = (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_SUPABASE_ANON_KEY) || '';
 
-export const SUPABASE_URL =
-  (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_SUPABASE_URL) ||
-  'https://fjscuokehikwhungyvll.supabase.co';
+/**
+ * Validasi apakah konfigurasi environment Supabase valid (bukan placeholder atau kosong)
+ */
+export function isSupabaseConfigured(): boolean {
+  if (!envUrl || !envKey) return false;
+  if (envUrl.includes('your-project.supabase.co') || envUrl.includes('placeholder')) return false;
+  if (envKey === 'your-anon-key' || envKey.includes('placeholder')) return false;
+  return true;
+}
 
-export const SUPABASE_ANON_KEY =
-  (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_SUPABASE_ANON_KEY) ||
-  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZqc2N1b2tlaGlrd2h1bmd5dmxsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODU2MTQ3NzMsImV4cCI6MjEwMTE5MDc3M30.IPCIdcYcVtDSpF2mJN-4nXf7urb71ZsdsZXWQzs8Ei4';
+export const SUPABASE_URL = envUrl || 'https://placeholder.supabase.co';
+export const SUPABASE_ANON_KEY = envKey || 'placeholder-anon-key';
+export const SUPABASE_PROJECT_NAME = 'SPMB SMP Al-Hadiid Cileungsi';
+export const SUPABASE_PROJECT_ID = envUrl.split('//')[1]?.split('.')[0] || 'staging';
 
 const safeAuthStorage = {
   getItem: (key: string): string | null => {
@@ -91,7 +98,21 @@ export async function fetchSupabaseState<T>(key: string): Promise<T | null> {
   }
 }
 
+const NON_TRANSACTIONAL_KEYS = new Set([
+  'school_info',
+  'website_config',
+  'class_quotas',
+  'cost_breakdown',
+  'test_schedules',
+  'gas_config',
+  'question_bank',
+]);
+
 export async function saveSupabaseState<T>(key: string, payload: T): Promise<boolean> {
+  if (!NON_TRANSACTIONAL_KEYS.has(key)) {
+    console.warn(`[Security Alert] Denied saving transactional key '${key}' to spmb_app_state.`);
+    return false;
+  }
   try {
     const { error } = await supabase
       .from('spmb_app_state')
@@ -109,242 +130,107 @@ export async function saveSupabaseState<T>(key: string, payload: T): Promise<boo
 }
 
 // Dedicated helper methods for sync
-export async function syncStudentsToSupabase(students: StudentData[]): Promise<void> {
-  try {
-    await saveSupabaseState('students', students);
-
-    if (!students || students.length === 0) return;
-
-    // 1. Ensure parent records exist in public.users to satisfy foreign key constraint
-    const userPayloads = students.map(s => ({
-      id: s.id,
-      name: s.fullName || 'Calon Murid',
-      email: s.userEmail ? s.userEmail.toLowerCase() : `std_${s.id}@alhadiid.sch.id`,
-      username: s.userEmail ? s.userEmail.split('@')[0].toLowerCase() : `std_${s.id}`,
-      phone: s.phone || '081234567890',
-      role: 'student',
-      registration_number: s.registrationNumber,
-      status: 'active',
-      created_at: s.createdAt || new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    }));
-
-    await supabase.from('users').upsert(userPayloads, { onConflict: 'id' });
-
-    // 2. Upsert into public.students
-    const studentPayloads = students.map(s => ({
-      id: s.id,
-      registration_number: s.registrationNumber,
-      status: s.status || 'draft',
-      user_email: s.userEmail ? s.userEmail.toLowerCase() : '',
-      full_name: s.fullName || 'Calon Murid',
-      phone: s.phone || '081234567890',
-      is_form_verified: s.isFormVerified || false,
-
-      form_payment_amount: s.formPaymentAmount || 200000,
-      form_payment_status: s.formPaymentStatus || 'unpaid',
-      form_payment_proof_url: s.formPaymentProofUrl || null,
-      form_payment_date: s.formPaymentDate || null,
-      form_payment_notes: s.formPaymentNotes || null,
-
-      nik: s.nik || null,
-      nisn: s.nisn || null,
-      birth_place: s.birthPlace || null,
-      birth_date: s.birthDate || null,
-      gender: s.gender || null,
-      religion: s.religion || 'Islam',
-      child_order: s.childOrder || null,
-      total_siblings: s.totalSiblings || null,
-      address: s.address || null,
-      village: s.village || null,
-      subdistrict: s.subdistrict || null,
-      city: s.city || null,
-      province: s.province || null,
-      postal_code: s.postalCode || null,
-
-      previous_school_name: s.previousSchoolName || null,
-      previous_school_npsn: s.previousSchoolNpsn || null,
-      previous_school_address: s.previousSchoolAddress || null,
-
-      father_name: s.fatherName || null,
-      father_birth_place: s.fatherBirthPlace || null,
-      father_birth_date: s.fatherBirthDate || null,
-      father_job: s.fatherJob || null,
-      father_education: s.fatherEducation || null,
-      father_phone: s.fatherPhone || null,
-
-      mother_name: s.motherName || null,
-      mother_birth_place: s.motherBirthPlace || null,
-      mother_birth_date: s.motherBirthDate || null,
-      mother_job: s.motherJob || null,
-      mother_education: s.motherEducation || null,
-      mother_phone: s.motherPhone || null,
-
-      guardian_name: s.guardianName || null,
-      guardian_relation: s.guardianRelation || null,
-      guardian_phone: s.guardianPhone || null,
-
-      photo_url: s.photoUrl || null,
-      kk_url: s.kkUrl || null,
-      birth_cert_url: s.birthCertUrl || null,
-      report_card_url: s.reportCardUrl || null,
-      kip_url: s.kipUrl || null,
-      certificate_url: s.certificateUrl || null,
-
-      is_test_active: s.isTestActive || false,
-      test_submitted: s.testSubmitted || false,
-      test_answers: s.testAnswers || {},
-      test_schedule_date: s.testScheduleDate || null,
-      test_location: s.testLocation || null,
-      diagnostic_score: s.diagnosticScore || null,
-      general_score: s.generalScore || null,
-      religious_score: s.religiousScore || null,
-      final_score: s.finalScore || null,
-      test_notes: s.testNotes || null,
-
-      initial_payment_amount: s.initialPaymentAmount || 0,
-      initial_payment_status: s.initialPaymentStatus || 'unpaid',
-      initial_payment_proof_url: s.initialPaymentProofUrl || null,
-      initial_payment_date: s.initialPaymentDate || null,
-      initial_payment_notes: s.initialPaymentNotes || null,
-
-      assigned_class_id: s.assignedClassId || null,
-      assigned_class_name: s.assignedClassName || null,
-      assigned_homeroom_teacher: s.assignedHomeroomTeacher || null,
-      first_day_date: s.firstDayDate || null,
-      mpls_info: s.mplsInfo || null,
-
-      created_at: s.createdAt || new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    }));
-
-    await supabase.from('students').upsert(studentPayloads, { onConflict: 'id' });
-  } catch (e) {
-    console.warn('Sync to public.students warning:', e);
-  }
+export async function syncStudentsToSupabase(_students: StudentData[]): Promise<void> {
+  // Deprecated & neutralized per Security Audit Tahap 3.
+  // Mutations must be performed individually via StudentRepository to prevent race conditions and overwrites.
 }
 
 export async function fetchStudentsFromSupabase(): Promise<StudentData[] | null> {
-  let kvStudents = await fetchSupabaseState<StudentData[]>('students');
-
   try {
-    const { data: dbStudents, error } = await supabase.from('students').select('*');
-    if (!error && dbStudents && dbStudents.length > 0) {
-      const mapped: StudentData[] = dbStudents.map((row: any) => ({
-        id: row.id,
-        registrationNumber: row.registration_number,
-        status: row.status,
-        userEmail: row.user_email,
-        createdAt: row.created_at,
-        isFormVerified: row.is_form_verified,
-        fullName: row.full_name,
-        phone: row.phone,
-        formPaymentProofUrl: row.form_payment_proof_url,
-        formPaymentDate: row.form_payment_date,
-        formPaymentAmount: Number(row.form_payment_amount || 200000),
-        formPaymentStatus: row.form_payment_status || 'unpaid',
-        formPaymentNotes: row.form_payment_notes,
-        nik: row.nik || '',
-        nisn: row.nisn,
-        birthPlace: row.birth_place || 'Bogor',
-        birthDate: row.birth_date || '2013-01-01',
-        gender: row.gender || 'Laki-laki',
-        religion: row.religion || 'Islam',
-        childOrder: row.child_order,
-        totalSiblings: row.total_siblings,
-        address: row.address || '',
-        village: row.village,
-        subdistrict: row.subdistrict || '',
-        city: row.city || '',
-        province: row.province || '',
-        postalCode: row.postal_code,
-        previousSchoolName: row.previous_school_name || '',
-        previousSchoolNpsn: row.previous_school_npsn,
-        previousSchoolAddress: row.previous_school_address,
-        fatherName: row.father_name || '',
-        fatherBirthPlace: row.father_birth_place,
-        fatherBirthDate: row.father_birth_date,
-        fatherJob: row.father_job,
-        fatherEducation: row.father_education || 'S1',
-        fatherPhone: row.father_phone || row.phone,
-        motherName: row.mother_name || '',
-        motherBirthPlace: row.mother_birth_place,
-        motherBirthDate: row.mother_birth_date,
-        motherJob: row.mother_job || 'Ibu Rumah Tangga',
-        motherEducation: row.mother_education,
-        motherPhone: row.mother_phone || row.phone,
-        guardianName: row.guardian_name,
-        guardianRelation: row.guardian_relation,
-        guardianPhone: row.guardian_phone,
-        photoUrl: row.photo_url,
-        kkUrl: row.kk_url,
-        birthCertUrl: row.birth_cert_url,
-        reportCardUrl: row.report_card_url,
-        kipUrl: row.kip_url,
-        certificateUrl: row.certificate_url,
-        isTestActive: row.is_test_active,
-        testSubmitted: row.test_submitted,
-        testAnswers: row.test_answers || {},
-        testScheduleDate: row.test_schedule_date,
-        testLocation: row.test_location,
-        diagnosticScore: row.diagnostic_score ? Number(row.diagnostic_score) : undefined,
-        generalScore: row.general_score ? Number(row.general_score) : undefined,
-        religiousScore: row.religious_score ? Number(row.religious_score) : undefined,
-        finalScore: row.final_score ? Number(row.final_score) : undefined,
-        testNotes: row.test_notes,
-        initialPaymentProofUrl: row.initial_payment_proof_url,
-        initialPaymentDate: row.initial_payment_date,
-        initialPaymentAmount: Number(row.initial_payment_amount || 0),
-        initialPaymentStatus: row.initial_payment_status || 'unpaid',
-        initialPaymentNotes: row.initial_payment_notes,
-        assignedClassId: row.assigned_class_id,
-        assignedClassName: row.assigned_class_name,
-        assignedHomeroomTeacher: row.assigned_homeroom_teacher,
-        firstDayDate: row.first_day_date,
-        mplsInfo: row.mpls_info,
-      }));
+    const { data: dbStudents, error } = await supabase
+      .from('students')
+      .select('*')
+      .order('created_at', { ascending: false });
 
-      if (!kvStudents || kvStudents.length === 0) {
-        return mapped;
-      }
-
-      // Merge intelligently: kvStudents contains rich JSON data (Base64 uploads, test answers, detailed fields)
-      // preserving full user input while updating matching keys from relational DB
-      const mapById = new Map<string, StudentData>();
-      kvStudents.forEach(s => mapById.set(s.id, s));
-
-      mapped.forEach(rel => {
-        const existing = mapById.get(rel.id);
-        if (existing) {
-          const merged: StudentData = { ...existing };
-          (Object.keys(rel) as (keyof StudentData)[]).forEach(k => {
-            const relVal = rel[k];
-            const extVal = existing[k];
-            if (relVal !== null && relVal !== undefined && relVal !== '') {
-              if (
-                typeof extVal === 'string' &&
-                extVal.trim() !== '' &&
-                ['Bogor', '2013-01-01', 'Islam', 'Laki-laki', 'S1', 'Ibu Rumah Tangga'].includes(String(relVal)) &&
-                !['Bogor', '2013-01-01', 'Islam', 'Laki-laki', 'S1', 'Ibu Rumah Tangga'].includes(extVal)
-              ) {
-                return;
-              }
-              (merged as any)[k] = relVal;
-            }
-          });
-          mapById.set(rel.id, merged);
-        } else {
-          mapById.set(rel.id, rel);
-        }
-      });
-
-      return Array.from(mapById.values());
+    if (error) {
+      console.warn('fetchStudentsFromSupabase relational fetch error:', error.message);
+      return null;
     }
-  } catch (e) {
-    console.warn('fetchStudentsFromSupabase relational fetch error:', e);
-  }
 
-  return kvStudents;
+    if (!dbStudents) {
+      return [];
+    }
+
+    const mapped: StudentData[] = dbStudents.map((row: any) => ({
+      id: row.id,
+      registrationNumber: row.registration_number,
+      status: row.status,
+      userEmail: row.user_email,
+      createdAt: row.created_at,
+      version: row.version ?? 1,
+      isFormVerified: row.is_form_verified,
+      fullName: row.full_name,
+      phone: row.phone,
+      formPaymentProofUrl: row.form_payment_proof_url,
+      formPaymentDate: row.form_payment_date,
+      formPaymentAmount: Number(row.form_payment_amount || 200000),
+      formPaymentStatus: row.form_payment_status || 'unpaid',
+      formPaymentNotes: row.form_payment_notes,
+      nik: row.nik || '',
+      nisn: row.nisn,
+      birthPlace: row.birth_place || 'Bogor',
+      birthDate: row.birth_date || '2013-01-01',
+      gender: row.gender || 'Laki-laki',
+      religion: row.religion || 'Islam',
+      childOrder: row.child_order,
+      totalSiblings: row.total_siblings,
+      address: row.address || '',
+      village: row.village,
+      subdistrict: row.subdistrict || '',
+      city: row.city || '',
+      province: row.province || '',
+      postalCode: row.postal_code,
+      previousSchoolName: row.previous_school_name || '',
+      previousSchoolNpsn: row.previous_school_npsn,
+      previousSchoolAddress: row.previous_school_address,
+      fatherName: row.father_name || '',
+      fatherBirthPlace: row.father_birth_place,
+      fatherBirthDate: row.father_birth_date,
+      fatherJob: row.father_job,
+      fatherEducation: row.father_education || 'S1',
+      fatherPhone: row.father_phone || row.phone,
+      motherName: row.mother_name || '',
+      motherBirthPlace: row.mother_birth_place,
+      motherBirthDate: row.mother_birth_date,
+      motherJob: row.mother_job || 'Ibu Rumah Tangga',
+      motherEducation: row.mother_education,
+      motherPhone: row.mother_phone || row.phone,
+      guardianName: row.guardian_name,
+      guardianRelation: row.guardian_relation,
+      guardianPhone: row.guardian_phone,
+      photoUrl: row.photo_url,
+      kkUrl: row.kk_url,
+      birthCertUrl: row.birth_cert_url,
+      reportCardUrl: row.report_card_url,
+      kipUrl: row.kip_url,
+      certificateUrl: row.certificate_url,
+      isTestActive: row.is_test_active,
+      testSubmitted: row.test_submitted,
+      testAnswers: row.test_answers || {},
+      testScheduleDate: row.test_schedule_date,
+      testLocation: row.test_location,
+      diagnosticScore: row.diagnostic_score ? Number(row.diagnostic_score) : undefined,
+      generalScore: row.general_score ? Number(row.general_score) : undefined,
+      religiousScore: row.religious_score ? Number(row.religious_score) : undefined,
+      finalScore: row.final_score ? Number(row.final_score) : undefined,
+      testNotes: row.test_notes,
+      initialPaymentProofUrl: row.initial_payment_proof_url,
+      initialPaymentDate: row.initial_payment_date,
+      initialPaymentAmount: Number(row.initial_payment_amount || 0),
+      initialPaymentStatus: row.initial_payment_status || 'unpaid',
+      initialPaymentNotes: row.initial_payment_notes,
+      assignedClassId: row.assigned_class_id,
+      assignedClassName: row.assigned_class_name,
+      assignedHomeroomTeacher: row.assigned_homeroom_teacher,
+      firstDayDate: row.first_day_date,
+      mplsInfo: row.mpls_info,
+    }));
+
+    return mapped;
+  } catch (e) {
+    console.warn('fetchStudentsFromSupabase relational fetch exception:', e);
+    return null;
+  }
 }
 
 export async function syncClassQuotasToSupabase(quotas: ClassQuota[]): Promise<void> {
@@ -545,87 +431,43 @@ export async function fetchWebsiteConfigFromSupabase(): Promise<WebsiteConfig | 
   return await fetchSupabaseState<WebsiteConfig>('website_config');
 }
 
-export async function syncUsersDbToSupabase(users: UserAccount[]): Promise<void> {
-  try {
-    await saveSupabaseState('users_db', users);
-
-    if (!users || users.length === 0) return;
-
-    for (const u of users) {
-      try {
-        const payload = {
-        id: u.id,
-        name: u.name,
-        email: u.email.toLowerCase(),
-        username: u.username || u.email.split('@')[0].toLowerCase(),
-        phone: u.phone,
-        role: u.role,
-        registration_number: u.registrationNumber || null,
-        status: u.status || 'active',
-        must_change_password: u.mustChangePassword || false,
-        created_at: u.createdAt || new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      };
-
-      const { error } = await supabase.from('users').upsert(payload, { onConflict: 'id' });
-      if (error) {
-        await supabase.from('users').upsert(payload, { onConflict: 'email' });
-      }
-    } catch (e) {
-      console.warn(`Sync to public.users warning for ${u.id}:`, e);
-    }
-  }
-  } catch (err) {
-    console.warn('syncUsersDbToSupabase error:', err);
-  }
+export async function syncUsersDbToSupabase(_users: UserAccount[]): Promise<void> {
+  // Deprecated & neutralized per Security Audit Tahap 4.
+  // User creation and updates must be executed individually via UserProfileRepository.
 }
 
 export async function fetchUsersDbFromSupabase(): Promise<UserAccount[] | null> {
-  const kvUsers = await fetchSupabaseState<UserAccount[]>('users_db');
-
   try {
-    const { data: dbUsers, error } = await supabase.from('users').select('*');
-    if (!error && dbUsers && dbUsers.length > 0) {
-      const mapped: UserAccount[] = dbUsers.map((u: any) => ({
-        id: u.id,
-        name: u.name,
-        email: u.email,
-        username: u.username,
-        phone: u.phone,
-        role: u.role as UserRole,
-        registrationNumber: u.registration_number,
-        status: u.status || 'active',
-        mustChangePassword: u.must_change_password || false,
-        createdAt: u.created_at,
-      }));
+    const { data: dbUsers, error } = await supabase
+      .from('users')
+      .select('*')
+      .order('created_at', { ascending: true });
 
-      if (!kvUsers || kvUsers.length === 0) return mapped;
-      const mapById = new Map<string, UserAccount>();
-      kvUsers.forEach(u => mapById.set(u.id, u));
-
-      mapped.forEach(rel => {
-        const existing = mapById.get(rel.id);
-        if (existing) {
-          mapById.set(rel.id, {
-            ...existing,
-            ...rel,
-            password: existing.password || rel.password,
-            username: rel.username || existing.username,
-            phone: rel.phone || existing.phone,
-            registrationNumber: rel.registrationNumber || existing.registrationNumber,
-          });
-        } else {
-          mapById.set(rel.id, rel);
-        }
-      });
-
-      return Array.from(mapById.values());
+    if (error) {
+      console.warn('fetchUsersDbFromSupabase relational fetch error:', error.message);
+      return null;
     }
+
+    if (!dbUsers) return [];
+
+    const mapped: UserAccount[] = dbUsers.map((u: any) => ({
+      id: u.id,
+      name: u.name,
+      email: u.email,
+      username: u.username,
+      phone: u.phone,
+      role: u.role as UserRole,
+      registrationNumber: u.registration_number,
+      status: u.status || 'active',
+      mustChangePassword: u.must_change_password || false,
+      createdAt: u.created_at,
+    }));
+
+    return mapped;
   } catch (e) {
     console.warn('fetchUsersDbFromSupabase relational fetch error:', e);
+    return null;
   }
-
-  return kvUsers;
 }
 
 // ==========================================
@@ -685,7 +527,6 @@ export async function signUpWithSupabase(params: {
       email: cleanEmail,
       username: params.username,
       phone: params.phone,
-      password: cleanPassword,
       role: params.role,
       registrationNumber: regNum,
       createdAt: new Date().toISOString(),
@@ -786,7 +627,7 @@ export async function ensureSupabaseAuthSession(
 
     // 3. Attempt signInWithPassword if password provided
     if (password) {
-      const { data: signInData } = await supabase.auth.signInWithPassword({
+      const { data: signInData, error: signInErr } = await supabase.auth.signInWithPassword({
         email,
         password,
       });
@@ -797,46 +638,21 @@ export async function ensureSupabaseAuthSession(
         }
         return { ok: true, session: signInData.session };
       }
-
-      // 4. If signIn failed (e.g. user not in auth.users yet), try signUp
-      const { data: signUpData } = await supabase.auth.signUp({
-        email,
-        password,
-        options: {
-          data: {
-            full_name: userProfile?.name || email.split('@')[0],
-            role: userProfile?.role || 'admin',
-          },
-        },
-      });
-
-      if (signUpData?.session) {
-        if (signUpData.user) {
-          await linkUserAuthId(userProfile?.id || signUpData.user.id, signUpData.user.id, email);
-        }
-        return { ok: true, session: signUpData.session };
-      }
-
-      // Retry signIn after signUp
-      const { data: retrySignIn } = await supabase.auth.signInWithPassword({ email, password });
-      if (retrySignIn?.session) {
-        if (retrySignIn.user) {
-          await linkUserAuthId(userProfile?.id || retrySignIn.user.id, retrySignIn.user.id, email);
-        }
-        return { ok: true, session: retrySignIn.session };
+      if (signInErr) {
+        return { ok: false, error: signInErr.message };
       }
     }
 
-    // 5. Check if there's any active session
+    // 4. Check if there's any active session
     const { data: finalCheck } = await supabase.auth.getSession();
     if (finalCheck.session) {
       return { ok: true, session: finalCheck.session };
     }
 
-    return { ok: false, error: 'Auth session missing!' };
+    return { ok: false, error: 'Sesi autentikasi tidak ditemukan. Silakan login kembali.' };
   } catch (err: any) {
     console.warn('ensureSupabaseAuthSession error:', err);
-    return { ok: false, error: err?.message || 'Gagal memverifikasi session Supabase Auth' };
+    return { ok: false, error: err?.message || 'Gagal memverifikasi sesi Supabase Auth' };
   }
 }
 
@@ -848,14 +664,18 @@ export async function signInWithSupabase(
     const cleanIdentifier = identifier.trim().toLowerCase();
     const cleanPassword = password.trim();
 
+    if (!cleanIdentifier || !cleanPassword) {
+      return { ok: false, error: 'Email/Username dan Password wajib diisi!' };
+    }
+
     let targetEmail = cleanIdentifier;
 
-    // Resolve username to email from public.users if not an email format
+    // Resolve username / registration_number to email from public.users if not an email format
     if (!cleanIdentifier.includes('@')) {
       const { data: userByUsername } = await supabase
         .from('users')
         .select('email')
-        .or(`username.eq.${cleanIdentifier},registration_number.eq.${cleanIdentifier},name.ilike.%${cleanIdentifier}%`)
+        .or(`username.eq.${cleanIdentifier},registration_number.eq.${cleanIdentifier}`)
         .maybeSingle();
 
       if (userByUsername?.email) {
@@ -863,91 +683,32 @@ export async function signInWithSupabase(
       }
     }
 
-    // 1. Attempt login with Supabase Auth
-    let { data: authData, error: authError } = await supabase.auth.signInWithPassword({
+    // 1. Authenticate with Supabase Auth
+    const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
       email: targetEmail,
       password: cleanPassword,
     });
 
-    if (authError) {
-      // Auto-register / provision in Supabase Auth if user doesn't exist yet
-      if (
-        authError.message.includes('Invalid login credentials') ||
-        authError.message.includes('User not found') ||
-        authError.message.includes('email_not_confirmed')
-      ) {
-        const { data: signUpData } = await supabase.auth.signUp({
-          email: targetEmail,
-          password: cleanPassword,
-          options: {
-            data: {
-              full_name: targetEmail.split('@')[0],
-              role: targetEmail.includes('superadmin') ? 'super_admin' : 'admin',
-            },
-          },
-        });
-
-        if (signUpData?.user && signUpData.session) {
-          authData = { user: signUpData.user, session: signUpData.session };
-          authError = null;
-        } else {
-          // Retry sign-in
-          const { data: retryData, error: retryErr } = await supabase.auth.signInWithPassword({
-            email: targetEmail,
-            password: cleanPassword,
-          });
-          if (retryData?.user) {
-            authData = retryData;
-            authError = null;
-          }
-        }
-      }
-
-      if (authError) {
-        return { ok: false, error: authError.message };
-      }
+    if (authError || !authData?.user) {
+      return { ok: false, error: authError?.message || 'Email/Username atau Password salah!' };
     }
 
     const authUser = authData.user;
-    if (!authUser) {
-      return { ok: false, error: 'User tidak ditemukan' };
-    }
 
     // 2. Fetch authoritative user profile from public.users
-    let userAccount = await getAuthUserProfile(authUser.id, authUser.email);
+    const userAccount = await getAuthUserProfile(authUser.id, authUser.email);
 
     if (!userAccount) {
-      // Fallback: create or link public.users entry
-      const role = (authUser.user_metadata?.role as UserRole) || (targetEmail.includes('superadmin') ? 'super_admin' : 'student');
-      const name = authUser.user_metadata?.full_name || (role === 'super_admin' ? 'Super Admin SPMB' : authUser.email?.split('@')[0] || 'User');
-      const userId = role === 'super_admin' ? 'usr_superadmin' : (role === 'student' ? `std_${Date.now()}` : `usr_${Date.now()}`);
-
-      userAccount = {
-        id: userId,
-        name,
-        email: authUser.email || targetEmail,
-        phone: authUser.user_metadata?.phone || '081234567890',
-        role,
-        createdAt: new Date().toISOString(),
-      };
-
-      try {
-        await supabase.from('users').upsert({
-          id: userId,
-          auth_user_id: authUser.id,
-          name: userAccount.name,
-          email: userAccount.email,
-          phone: userAccount.phone,
-          role: userAccount.role,
-          created_at: userAccount.createdAt,
-        }, { onConflict: 'id' });
-      } catch (e) {
-        console.warn('Fallback public.users upsert warning:', e);
-      }
-    } else {
-      // Ensure auth_user_id is set
-      await linkUserAuthId(userAccount.id, authUser.id, authUser.email || targetEmail);
+      return { ok: false, error: 'Profil akun tidak ditemukan di database. Hubungi Administrator.' };
     }
+
+    if (userAccount.status === 'disabled') {
+      await supabase.auth.signOut();
+      return { ok: false, error: 'Akses Ditolak: Akun Anda telah dinonaktifkan oleh Administrator.' };
+    }
+
+    // Ensure auth_user_id is linked if not already set
+    await linkUserAuthId(userAccount.id, authUser.id, authUser.email || targetEmail);
 
     return { ok: true, userAccount };
   } catch (err: any) {
@@ -1111,7 +872,6 @@ export async function updateUserAccountCredentials(params: {
     if (params.newUsername !== undefined) updates.username = params.newUsername.trim();
     if (params.newStatus !== undefined) updates.status = params.newStatus;
     if (params.newName !== undefined) updates.name = params.newName.trim();
-    if (params.newPassword !== undefined) updates.password = params.newPassword;
 
     if (Object.keys(updates).length > 0) {
       const { error: dbError } = await supabase
@@ -1127,18 +887,7 @@ export async function updateUserAccountCredentials(params: {
     // Update Password via Supabase Auth
     if (params.newPassword) {
       // 1. Verify/ensure active Supabase Auth session
-      let { data: { session } } = await supabase.auth.getSession();
-
-      if (!session && params.adminUser?.email && params.adminUser?.password) {
-        const authRes = await ensureSupabaseAuthSession(
-          params.adminUser.email,
-          params.adminUser.password,
-          params.adminUser
-        );
-        if (authRes.session) {
-          session = authRes.session;
-        }
-      }
+      const { data: { session } } = await supabase.auth.getSession();
 
       if (session) {
         if (params.targetUserId === params.adminUser?.id || (session.user && session.user.email?.toLowerCase() === params.adminUser?.email.toLowerCase())) {

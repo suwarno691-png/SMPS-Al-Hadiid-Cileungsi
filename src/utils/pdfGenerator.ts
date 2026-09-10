@@ -478,7 +478,7 @@ export function generateRegistrationPDF(student: StudentData, schoolInfo: School
   doc.save(`Formulir_SPMB_${safeReg}_${safeName}.pdf`);
 }
 
-export function generateReportPDF(title: string, data: any[], columns: string[]) {
+export function generateReportPDF(title: string, data: any[], columns: string[], schoolInfo?: SchoolInfo) {
   const doc = new jsPDF({
     orientation: 'landscape',
     unit: 'mm',

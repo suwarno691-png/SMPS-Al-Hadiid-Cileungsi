@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { UserAccount, UserRole } from '../types';
-import { getUsersDb, saveUserToDb, getStoredStudents, ensureStudentDataExists, setCurrentUser } from '../utils/storage';
-import { signUpWithSupabase, signInWithSupabase, ensureSupabaseAuthSession } from '../utils/supabaseClient';
+import { saveUserToDb, setCurrentUser } from '../utils/storage';
+import { signUpWithSupabase, signInWithSupabase } from '../utils/supabaseClient';
 import {
   LogIn, UserPlus, X, Lock, Mail, Phone, User, CheckCircle2,
   GraduationCap, ShieldAlert, ShieldCheck, Eye, EyeOff, HelpCircle,
@@ -36,11 +36,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     }
   }, [isOpen, initialMode]);
 
-  const isProduction = Boolean(typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.PROD);
-
   // Student Login fields
-  const [studentUsername, setStudentUsername] = useState(isProduction ? '' : 'fathan');
-  const [studentPassword, setStudentPassword] = useState(isProduction ? '' : 'murid123456');
+  const [studentUsername, setStudentUsername] = useState('');
+  const [studentPassword, setStudentPassword] = useState('');
   const [showStudentPassword, setShowStudentPassword] = useState(false);
 
   // Admin / Kepsek Login fields
@@ -67,20 +65,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     setAdminPassword('');
     setStudentUsername('');
     setStudentPassword('');
-
-    if (!isProduction) {
-      if (role === 'admin') {
-        setEmail('admin@alhadiid.sch.id');
-        setAdminPassword('admin123');
-      } else if (role === 'kepsek') {
-        setEmail('kepsek@alhadiid.sch.id');
-        setAdminPassword('kepsek123');
-      } else if (role === 'student') {
-        setStudentUsername('fathan');
-        setStudentPassword('murid123456');
-      }
-      // Super admin is always kept blank for security!
-    }
   };
 
   // Trigger SweetAlert2 Login Error Dialog
@@ -183,43 +167,13 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       role: 'student',
     });
 
-    let newUser = res.userAccount;
-
-    if (!newUser) {
-      // Check if email or username is already used in existing users DB
-      const db = getUsersDb();
-      const existingUser = db.find(
-        u => u.email.toLowerCase() === trimmedEmail ||
-             (u.username && u.username.toLowerCase() === trimmedUsername.toLowerCase())
-      );
-
-      if (existingUser) {
-        setErrorMsg('Email atau Username sudah terdaftar! Silakan gunakan Username/Email lain atau langsung login.');
-        return;
-      }
-
-      // If Supabase Auth didn't return a user (e.g. rate limit/network), generate valid student user account locally
-      newUser = {
-        id: `std_${Date.now()}`,
-        name: trimmedFullName,
-        email: trimmedEmail,
-        username: trimmedUsername,
-        phone: trimmedPhone,
-        password: trimmedPassword,
-        role: 'student',
-        registrationNumber: `SPMB2027${Math.floor(1000 + Math.random() * 9000)}`,
-        createdAt: new Date().toISOString(),
-      };
-    } else {
-      // Ensure password is attached to user account record
-      newUser = {
-        ...newUser,
-        password: trimmedPassword,
-      };
+    if (!res.ok || !res.userAccount) {
+      setErrorMsg(res.error || 'Gagal mendaftar akun via database. Silakan coba lagi.');
+      return;
     }
 
+    const newUser = res.userAccount;
     saveUserToDb(newUser);
-    ensureStudentDataExists(newUser, getStoredStudents());
 
     Swal.fire({
       icon: 'success',
@@ -235,7 +189,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       setMode('login');
       setSelectedRole('student');
       setStudentUsername(trimmedUsername);
-      setStudentPassword(trimmedPassword);
+      setStudentPassword('');
       setErrorMsg('');
     });
   };
@@ -254,50 +208,19 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         return;
       }
 
-      const db = getUsersDb();
-      const studentUser = db.find(
-        u =>
-          u.role === 'student' &&
-          ((u.username && u.username.toLowerCase() === trimmedUsername.toLowerCase()) ||
-            u.email.toLowerCase() === trimmedUsername.toLowerCase() ||
-            (u.phone && u.phone === trimmedUsername))
-      );
-
       // Attempt Supabase Auth Login
-      const targetLogin = studentUser ? studentUser.email : trimmedUsername;
-      const res = await signInWithSupabase(targetLogin, trimmedPassword);
-
-      let activeUserSession: UserAccount | null = null;
+      const res = await signInWithSupabase(trimmedUsername, trimmedPassword);
 
       if (res.ok && res.userAccount) {
-        activeUserSession = {
-          ...(studentUser || res.userAccount),
-          ...res.userAccount,
-          password: trimmedPassword,
-          role: 'student',
-        };
-      } else if (studentUser) {
-        // Strict local credential verification if Supabase Auth is unavailable/rate limited
-        if (studentUser.password && studentUser.password !== trimmedPassword) {
-          setErrorMsg('Password yang Anda masukkan salah! Silakan periksa kembali password Anda.');
+        const activeUserSession = res.userAccount;
+
+        if (activeUserSession.role !== 'student') {
+          setErrorMsg('Akses Ditolak: Akun ini bukan akun Calon Murid. Silakan gunakan tab Panitia/Admin untuk login.');
           return;
         }
-        activeUserSession = {
-          ...studentUser,
-          role: 'student',
-          password: studentUser.password || trimmedPassword,
-          lastLogin: new Date().toISOString(),
-        };
-      } else {
-        // User not found in local DB and Supabase Auth failed
-        setErrorMsg('Akun Calon Murid tidak ditemukan! Silakan lakukan pendaftaran terlebih dahulu.');
-        return;
-      }
 
-      if (activeUserSession) {
         saveUserToDb(activeUserSession);
         setCurrentUser(activeUserSession);
-        ensureStudentDataExists(activeUserSession, getStoredStudents());
 
         Swal.fire({
           icon: 'success',
@@ -315,6 +238,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         return;
       }
 
+      setErrorMsg(res.error || 'Username/Email atau Password salah!');
       triggerLoginFailedAlert();
       return;
     } else {
@@ -327,96 +251,32 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         return;
       }
 
-      // 1. Check if account exists in getUsersDb() (database created/managed by Super Admin)
-      const db = getUsersDb();
-      let registeredUser = db.find(
-        u =>
-          u.email.toLowerCase() === trimmedInput ||
-          (u.username && u.username.toLowerCase() === trimmedInput) ||
-          (u.phone && u.phone === trimmedInput)
-      );
-
-      if (selectedRole === 'super_admin' && (!registeredUser || registeredUser.role !== 'super_admin')) {
-        const superUserInDb = db.find(u => u.role === 'super_admin' || u.email === 'superadmin@alhadiid.sch.id');
-        if (superUserInDb) {
-          registeredUser = superUserInDb;
-        }
-      }
-
-      // Fallback auto-recovery for default system accounts if missing in localStorage
-      if (!registeredUser) {
-        if (trimmedInput === 'superadmin' || trimmedInput === 'superadmin@alhadiid.sch.id' || selectedRole === 'super_admin') {
-          registeredUser = {
-            id: 'usr_superadmin',
-            name: 'Super Admin SPMB',
-            email: 'superadmin@alhadiid.sch.id',
-            username: 'superadmin',
-            phone: '081234567899',
-            role: 'super_admin',
-            password: 'superadmin123',
-            status: 'active',
-            createdAt: '2027-01-01',
-          };
-        } else if (trimmedInput === 'admin' || trimmedInput === 'admin@alhadiid.sch.id') {
-          registeredUser = {
-            id: 'usr_admin',
-            name: 'Panitia SPMB',
-            email: 'admin@alhadiid.sch.id',
-            username: 'admin',
-            phone: '081234567890',
-            role: 'admin',
-            password: 'admin123',
-            status: 'active',
-            createdAt: '2027-01-01',
-          };
-        } else if (trimmedInput === 'kepsek' || trimmedInput === 'kepsek@alhadiid.sch.id') {
-          registeredUser = {
-            id: 'usr_kepsek',
-            name: 'Dr. H. Ahmad Dahlan, M.Pd.',
-            email: 'kepsek@alhadiid.sch.id',
-            username: 'kepsek',
-            phone: '081299887766',
-            role: 'kepsek',
-            password: 'kepsek123',
-            status: 'active',
-            createdAt: '2027-01-01',
-          };
-        }
-      }
-
-      // Strict enforcement: Only accounts created by Super Admin can log in as Admin/Panitia!
-      if (!registeredUser) {
-        setErrorMsg('Akses Ditolak: Akun tidak terdaftar! Hanya akun Panitia/Admin yang telah dibuat oleh Super Admin yang dapat login.');
-        return;
-      }
-
-      // Super Admin account is never disabled
-      if (registeredUser.role === 'super_admin') {
-        registeredUser.status = 'active';
-      }
-
-      // 2. Check if account status is disabled
-      if (registeredUser.status === 'disabled') {
-        setErrorMsg('Akses Ditolak: Akun Anda telah dinonaktifkan oleh Super Admin.');
-        return;
-      }
-
-      // 3. Check if account role is an admin role
-      if (registeredUser.role === 'student') {
-        setErrorMsg('Akses Ditolak: Akun ini terdaftar sebagai Calon Murid. Silakan gunakan tab Calon Murid untuk login.');
-        return;
-      }
-
-      // 4. Try Supabase Auth login
-      const res = await signInWithSupabase(registeredUser.email, trimmedPassword);
+      // Authenticate directly through Supabase Auth
+      const res = await signInWithSupabase(trimmedInput, trimmedPassword);
 
       if (res.ok && res.userAccount) {
-        const adminSession: UserAccount = {
-          ...registeredUser,
-          ...res.userAccount,
-          role: registeredUser.role, // preserve role configured by Super Admin
-          lastLogin: new Date().toISOString(),
-        };
+        const adminSession = res.userAccount;
+
+        if (adminSession.role === 'student') {
+          setErrorMsg('Akses Ditolak: Akun ini terdaftar sebagai Calon Murid. Silakan gunakan tab Calon Murid untuk login.');
+          return;
+        }
+
+        if (selectedRole === 'super_admin' && adminSession.role !== 'super_admin') {
+          setErrorMsg('Akses Ditolak: Akun ini tidak memiliki hak akses Super Admin.');
+          return;
+        }
+
+        if (selectedRole === 'kepsek' && adminSession.role !== 'kepsek' && adminSession.role !== 'super_admin') {
+          setErrorMsg('Akses Ditolak: Akun ini tidak memiliki hak akses Kepala Sekolah.');
+          return;
+        }
+
+        if (adminSession.status === 'disabled') {
+          setErrorMsg('Akses Ditolak: Akun Anda telah dinonaktifkan oleh Super Admin.');
+          return;
+        }
+
         saveUserToDb(adminSession);
         setCurrentUser(adminSession);
 
@@ -434,53 +294,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         return;
       }
 
-      // 5. Fallback credential check for accounts created/managed by Super Admin
-      const lowerPass = trimmedPassword.toLowerCase();
-      const isSuperAdminAccount =
-        registeredUser.role === 'super_admin' ||
-        selectedRole === 'super_admin' ||
-        registeredUser.email.toLowerCase() === 'superadmin@alhadiid.sch.id' ||
-        (registeredUser.username && registeredUser.username.toLowerCase() === 'superadmin');
-
-      const isPasswordValid =
-        (registeredUser.password && registeredUser.password === trimmedPassword) ||
-        (registeredUser.password && registeredUser.password.toLowerCase() === lowerPass) ||
-        (isSuperAdminAccount && (
-          lowerPass === 'superadmin123' ||
-          lowerPass === 'superadmin' ||
-          lowerPass === 'admin123' ||
-          lowerPass === '123456'
-        )) ||
-        (registeredUser.role === 'admin' && (lowerPass === 'admin123' || lowerPass === 'admin' || lowerPass === '123456')) ||
-        (registeredUser.role === 'kepsek' && (lowerPass === 'kepsek123' || lowerPass === 'kepsek' || lowerPass === '123456'));
-
-      if (isPasswordValid) {
-        // Ensure Supabase Auth session exists so getSession() is populated
-        await ensureSupabaseAuthSession(registeredUser.email, trimmedPassword, registeredUser);
-
-        const adminSession: UserAccount = {
-          ...registeredUser,
-          password: trimmedPassword,
-          lastLogin: new Date().toISOString(),
-        };
-        saveUserToDb(adminSession);
-        setCurrentUser(adminSession);
-
-        Swal.fire({
-          icon: 'success',
-          title: 'Login Berhasil!',
-          text: `Selamat datang kembali, ${adminSession.name} (${adminSession.role === 'super_admin' ? 'Super Admin' : adminSession.role === 'kepsek' ? 'Kepala Sekolah' : 'Panitia SPMB'})!`,
-          timer: 1500,
-          showConfirmButton: false,
-          customClass: { popup: 'rounded-2xl font-sans' },
-        });
-
-        onLoginSuccess(adminSession);
-        onClose();
-        return;
-      }
-
-      setErrorMsg('Password yang Anda masukkan salah! Silakan periksa kembali password Anda.');
+      setErrorMsg(res.error || 'Email/Username atau Password salah!');
       return;
     }
   };

@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { SchoolInfo } from '../../types';
-import { getStoredFormPayments, getStoredBamPayments } from '../../utils/storage';
+import { getStoredFormPayments, getStoredBamPayments, getKepalaSekolahName } from '../../utils/storage';
 import { exportToExcel } from '../../utils/excelExporter';
 import { generateReportPDF } from '../../utils/pdfGenerator';
 import {
@@ -72,7 +72,8 @@ export const KepsekPaymentReportSection: React.FC<KepsekPaymentReportSectionProp
     generateReportPDF(
       `Laporan_Keuangan_Kepsek_SPMB_${schoolInfo.academicYear.replace('/', '_')}`,
       reportData,
-      ['Jenis', 'No_TRX', 'No_Reg', 'Nama', 'JK', 'Ket_Cicilan', 'Bayar', 'Sisa_Saldo']
+      ['Jenis', 'No_TRX', 'No_Reg', 'Nama', 'JK', 'Ket_Cicilan', 'Bayar', 'Sisa_Saldo'],
+      schoolInfo
     );
   };
 
@@ -489,9 +490,11 @@ export const KepsekPaymentReportSection: React.FC<KepsekPaymentReportSectionProp
           <div className="text-center space-y-1">
             <div>Cileungsi, {new Date().toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' })}</div>
             <div className="font-bold text-slate-900 pt-8 border-b border-slate-800">
-              {schoolInfo.headmasterName || 'Herman Jayusman, S.Pd.I.'}
+              {getKepalaSekolahName(schoolInfo)}
             </div>
-            <div className="text-[11px] text-slate-500">Kepala Sekolah SMP Al-Hadiid Cileungsi</div>
+            <div className="text-[11px] text-slate-500">
+              {schoolInfo.headmasterNiy ? `NIY. ${schoolInfo.headmasterNiy}` : 'Kepala Sekolah SMP Al-Hadiid Cileungsi'}
+            </div>
           </div>
         </div>
       </div>

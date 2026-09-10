@@ -317,6 +317,7 @@ export default function App() {
             onLogout={handleLogout}
             onNavigateHome={handleNavigateHome}
             onOpenWhatsApp={handleOpenWhatsApp}
+            onRefreshAllData={handleRefreshAllData}
           />
 
           {/* Landing Page Content */}
@@ -353,6 +354,7 @@ export default function App() {
           activeTab={activeTab}
           onTabChange={handleTabChange}
           studentData={currentStudentData}
+          onRefreshAllData={handleRefreshAllData}
         >
           {activeRoleView === 'student' && (
             <StudentDashboard

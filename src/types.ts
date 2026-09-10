@@ -25,7 +25,6 @@ export interface UserAccount {
   role: UserRole;
   registrationNumber?: string;
   createdAt: string;
-  password?: string;
   status?: 'active' | 'disabled';
   mustChangePassword?: boolean;
   lastLogin?: string;
@@ -48,6 +47,8 @@ export interface StudentData {
   status: AdmissionStatus;
   userEmail: string;
   createdAt: string;
+  updatedAt?: string;
+  version?: number;
 
   // Verification flag by Admin
   isFormVerified?: boolean; // Set to true when Admin verifies form & payment

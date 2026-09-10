@@ -24,6 +24,8 @@ import {
   HelpCircle, FileJson, Calendar, BookOpen, PlusCircle, CheckSquare2, LayoutDashboard, Image as ImageIcon, Lock, GraduationCap
 } from 'lucide-react';
 import { SupabaseBadge } from './SupabaseBadge';
+import { SupabaseSyncButton } from './SupabaseSyncButton';
+import { SupabaseSyncTab } from './SupabaseSyncTab';
 import { CbtDashboardAdmin } from './cbt/CbtDashboardAdmin';
 import { CbtKategoriManager } from './cbt/CbtKategoriManager';
 import { CbtBankSoalManager } from './cbt/CbtBankSoalManager';
@@ -845,6 +847,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           </div>
 
           <div className="flex items-center gap-3">
+            <SupabaseSyncButton variant="header" onDataSynced={onRefreshAllData} />
+
             <button
               onClick={handleExportApplicantsExcel}
               className="px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold text-xs shadow-sm transition-all flex items-center gap-1.5"
@@ -999,6 +1003,16 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           </button>
 
           <button
+            onClick={() => setActiveTab('supabase_sync')}
+            className={`px-3.5 py-2 rounded-lg transition-all flex items-center gap-1.5 ${
+              activeTab === 'supabase_sync' ? 'bg-blue-600 text-white shadow-sm font-bold ring-2 ring-blue-500/30' : 'text-slate-600 hover:bg-slate-100 font-semibold'
+            }`}
+          >
+            <Database className="w-4 h-4 text-blue-500" />
+            <span>Sinkron Supabase</span>
+          </button>
+
+          <button
             onClick={() => setActiveTab('database_management')}
             className={`px-3.5 py-2 rounded-lg transition-all flex items-center gap-1.5 ${
               activeTab === 'database_management' ? 'bg-amber-600 text-white shadow-sm font-semibold' : 'text-slate-600 hover:bg-slate-100'
@@ -1093,7 +1107,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         {/* TAB 1: OVERVIEW METRICS */}
         {activeTab === 'overview' && (
           <div className="space-y-6">
-            <SupabaseBadge variant="full" />
+            <SupabaseSyncButton variant="card" onDataSynced={onRefreshAllData} />
 
             {/* Download Success Alert Toast */}
             {downloadSuccessMsg && (
@@ -3294,6 +3308,11 @@ Kunci: B`}
           />
         )}
 
+        {/* TAB: SUPABASE SYNC */}
+        {activeTab === 'supabase_sync' && (
+          <SupabaseSyncTab onRefreshAllData={onRefreshAllData} />
+        )}
+
         {/* TAB: DATABASE MANAGEMENT */}
         {activeTab === 'database_management' && (
           <div className="space-y-6">
@@ -3318,9 +3337,12 @@ Kunci: B`}
                 <span>Pusat Pengelolaan Database SPMB</span>
               </div>
               <p className="text-xs text-slate-300 max-w-2xl">
-                Gunakan menu ini untuk membuat cadangan (backup) seluruh data sistem, memulihkan (restore) dari file arsip, membersihkan data pendaftar lama, atau melakukan reset pabrik.
+                Gunakan menu ini untuk membuat cadangan (backup) seluruh data sistem, memulihkan (restore) dari file arsip, menyinkronkan dengan Supabase Cloud, membersihkan data pendaftar lama, atau melakukan reset pabrik.
               </p>
             </div>
+
+            {/* Supabase Live Cloud Sync Card */}
+            <SupabaseSyncButton variant="card" onDataSynced={onRefreshAllData} />
 
             {/* 4 Database Cards */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
