@@ -1,7 +1,9 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { UserAccount, UserRole, StudentData } from '../types';
-import { getUsersDb, saveUserToDb, deleteUserFromDb, saveUsersDb, setCurrentUser } from '../utils/storage';
-import { signUpWithSupabase, updateUserAccountCredentials } from '../utils/supabaseClient';
+import { getUsersDb, saveUserToDb, deleteUserFromDb, saveUsersDb, ensureStudentDataExists, setCurrentUser } from '../utils/storage';
+import { signUpWithSupabase, updateUserAccountCredentials, fetchUsersDbFromSupabase } from '../utils/supabaseClient';
+import { UserProfileRepository } from '../repositories/UserProfileRepository';
+import { StudentRepository } from '../repositories/StudentRepository';
 import Swal from 'sweetalert2';
 import {
   Users, UserPlus, Shield, ShieldAlert, ShieldCheck, GraduationCap,
@@ -23,6 +25,7 @@ export const UserManagementSection: React.FC<UserManagementSectionProps> = ({
   onRefreshAllData,
 }) => {
   const [users, setUsers] = useState<UserAccount[]>(() => getUsersDb());
+  const [isLoadingUsers, setIsLoadingUsers] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [roleFilter, setRoleFilter] = useState<'all' | 'super_admin' | 'admin' | 'kepsek' | 'student'>('all');
 
@@ -46,30 +49,51 @@ export const UserManagementSection: React.FC<UserManagementSectionProps> = ({
   const [successMsg, setSuccessMsg] = useState('');
   const [errMsg, setErrMsg] = useState('');
 
-  const refreshUsers = () => {
+  const refreshUsers = async () => {
+    setIsLoadingUsers(true);
+    try {
+      const { data, error } = await UserProfileRepository.listForAdmin();
+      if (!error && data && data.length > 0) {
+        setUsers(data);
+        saveUsersDb(data);
+        return;
+      }
+      const cloudUsers = await fetchUsersDbFromSupabase();
+      if (cloudUsers && cloudUsers.length > 0) {
+        setUsers(cloudUsers);
+        saveUsersDb(cloudUsers);
+        return;
+      }
+    } catch (e) {
+      console.warn('refreshUsers direct Supabase fetch error:', e);
+    } finally {
+      setIsLoadingUsers(false);
+    }
     const list = getUsersDb();
     setUsers(list);
   };
 
+  useEffect(() => {
+    refreshUsers();
+  }, []);
+
   // Sync Student accounts to Students list rekap
   const handleSyncStudentData = () => {
-    let hasChanges = false;
-    const updatedStudents = students.map(st => {
-      const matchingUser = users.find(u => u.email.toLowerCase() === st.userEmail.toLowerCase());
-      if (matchingUser && (st.fullName !== matchingUser.name || (matchingUser.phone && st.phone !== matchingUser.phone))) {
-        hasChanges = true;
-        return {
-          ...st,
-          fullName: matchingUser.name || st.fullName,
-          phone: matchingUser.phone || st.phone,
-        };
+    let currentStudents = [...students];
+    const studentUsers = users.filter(u => u.role === 'student');
+    let addedCount = 0;
+
+    studentUsers.forEach(su => {
+      const initialLength = currentStudents.length;
+      currentStudents = ensureStudentDataExists(su, currentStudents);
+      if (currentStudents.length > initialLength) {
+        addedCount++;
       }
-      return st;
     });
 
-    if (hasChanges) {
-      onUpdateStudents(updatedStudents);
-      setSuccessMsg(`✓ Berhasil menyelaraskan data pendaftar dengan akun siswa terdaftar.`);
+    if (addedCount > 0) {
+      onUpdateStudents(currentStudents);
+      setSuccessMsg(`✓ Berhasil menyinkronkan ${addedCount} akun calon murid baru ke rekap data pendaftar!`);
     } else {
       setSuccessMsg('✓ Seluruh data akun calon murid telah tersinkronisasi lengkap dengan rekap pendaftar.');
     }
@@ -152,7 +176,7 @@ export const UserManagementSection: React.FC<UserManagementSectionProps> = ({
     }
 
     if (!formData.password || formData.password.trim().length < 8) {
-      setErrMsg('Password awal akun wajib diisi (minimal 8 karakter)!');
+      setErrMsg('Password wajib diisi minimal 8 karakter.');
       return;
     }
 
@@ -179,10 +203,7 @@ export const UserManagementSection: React.FC<UserManagementSectionProps> = ({
     };
 
     saveUserToDb(newUser);
-    if (newUser.role === 'student') {
-      const updatedStudents = ensureStudentDataExists(newUser, students);
-      onUpdateStudents(updatedStudents);
-    }
+    await UserProfileRepository.create(newUser);
 
     refreshUsers();
     setShowAddModal(false);
@@ -191,7 +212,7 @@ export const UserManagementSection: React.FC<UserManagementSectionProps> = ({
   };
 
   // Save Edit User (Update)
-  const handleSaveEditUser = (e: React.FormEvent) => {
+  const handleSaveEditUser = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingUser) return;
 
@@ -210,10 +231,7 @@ export const UserManagementSection: React.FC<UserManagementSectionProps> = ({
     };
 
     saveUserToDb(updatedUser);
-    if (updatedUser.role === 'student') {
-      const updatedStudents = ensureStudentDataExists(updatedUser, students);
-      onUpdateStudents(updatedStudents);
-    }
+    await UserProfileRepository.update(editingUser.id, updatedUser);
 
     if (currentUser && (editingUser.id === currentUser.id || editingUser.email.toLowerCase() === currentUser.email.toLowerCase())) {
       setCurrentUser(updatedUser);
@@ -304,11 +322,22 @@ export const UserManagementSection: React.FC<UserManagementSectionProps> = ({
     if (!result.isConfirmed) return;
 
     deleteUserFromDb(user.id);
+    await UserProfileRepository.remove(user.id);
+
     if (user.role === 'student' || user.email) {
-      const updatedStudents = students.filter(
-        s => s.id !== user.id && s.userEmail.toLowerCase() !== user.email.toLowerCase()
+      const targetStudent = students.find(
+        s => s.id === user.id || s.userEmail.toLowerCase() === user.email.toLowerCase()
       );
-      onUpdateStudents(updatedStudents);
+      if (targetStudent) {
+        await StudentRepository.remove(targetStudent.id);
+        const updatedStudents = students.filter(s => s.id !== targetStudent.id);
+        onUpdateStudents(updatedStudents);
+      } else {
+        const updatedStudents = students.filter(
+          s => s.id !== user.id && s.userEmail.toLowerCase() !== user.email.toLowerCase()
+        );
+        onUpdateStudents(updatedStudents);
+      }
     }
     refreshUsers();
     setSuccessMsg(`✓ Akun "${user.name}" (${user.email}) telah berhasil dihapus secara permanen oleh Super Admin.`);
@@ -734,11 +763,12 @@ export const UserManagementSection: React.FC<UserManagementSectionProps> = ({
               </div>
 
               <div>
-                <label className="block font-bold text-slate-700 mb-1">Password Awal Akun (Wajib, min. 8 karakter):</label>
+                <label className="block font-bold text-slate-700 mb-1">Password Awal Akun (Wajib, Min. 8 Karakter):</label>
                 <input
-                  type="password"
+                  type="text"
                   required
-                  placeholder="Masukkan password baru (min. 8 karakter)..."
+                  minLength={8}
+                  placeholder="Minimal 8 karakter..."
                   value={formData.password}
                   onChange={(e) => setFormData({ ...formData, password: e.target.value })}
                   className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl font-medium focus:ring-2 focus:ring-blue-500"

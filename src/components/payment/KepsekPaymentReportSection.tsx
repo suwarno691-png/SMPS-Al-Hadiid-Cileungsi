@@ -1,27 +1,95 @@
-import React, { useState } from 'react';
-import { SchoolInfo } from '../../types';
+import React, { useState, useEffect } from 'react';
+import { SchoolInfo, StudentData, FormPaymentRecord, BamPaymentRecord } from '../../types';
 import { getStoredFormPayments, getStoredBamPayments, getKepalaSekolahName } from '../../utils/storage';
+import { PaymentRepository } from '../../repositories/PaymentRepository';
+import { fetchFormPaymentsFromSupabase, fetchBamPaymentsFromSupabase } from '../../utils/supabaseClient';
 import { exportToExcel } from '../../utils/excelExporter';
 import { generateReportPDF } from '../../utils/pdfGenerator';
 import {
   FileText, FileSpreadsheet, ShieldCheck, DollarSign,
-  TrendingUp, Users, CheckCircle2, PieChart, Filter, Database
+  TrendingUp, Users, CheckCircle2, PieChart, Filter, Database, RefreshCw
 } from 'lucide-react';
 import { PaymentSqlModal } from './PaymentSqlModal';
 
 interface KepsekPaymentReportSectionProps {
   schoolInfo: SchoolInfo;
+  students?: StudentData[];
 }
 
 export const KepsekPaymentReportSection: React.FC<KepsekPaymentReportSectionProps> = ({
   schoolInfo,
+  students = [],
 }) => {
-  const formPayments = getStoredFormPayments();
-  const bamPayments = getStoredBamPayments();
+  const [formPayments, setFormPayments] = useState<FormPaymentRecord[]>(() => getStoredFormPayments());
+  const [bamPayments, setBamPayments] = useState<BamPaymentRecord[]>(() => getStoredBamPayments());
+  const [isLoadingPayments, setIsLoadingPayments] = useState(false);
 
   const [genderFilter, setGenderFilter] = useState<'all' | 'Laki-laki' | 'Perempuan'>('all');
   const [activeReportTab, setActiveReportTab] = useState<'all' | 'form' | 'bam'>('all');
   const [showSqlModal, setShowSqlModal] = useState(false);
+
+  // Sync payments directly from Supabase
+  useEffect(() => {
+    setIsLoadingPayments(true);
+    Promise.all([
+      PaymentRepository.list('form'),
+      PaymentRepository.list('bam'),
+    ]).then(([formRes, bamRes]) => {
+      if (formRes.data && formRes.data.length > 0) {
+        setFormPayments(formRes.data.map(p => ({
+          id: p.id,
+          transactionNumber: p.id,
+          paymentDate: p.paymentDate || (p.createdAt ? p.createdAt.split('T')[0] : new Date().toISOString().split('T')[0]),
+          studentId: p.studentId,
+          studentName: p.studentName || 'Calon Murid',
+          registrationNumber: p.registrationNumber || 'SPMB',
+          gender: p.gender || 'Laki-laki',
+          amount: p.amount || 200000,
+          category: 'Internal',
+          proofUrl: p.proofUrl,
+          status: (p.status as any) || 'verified',
+          notes: p.notes,
+          createdAt: p.createdAt || new Date().toISOString(),
+        })));
+      } else {
+        fetchFormPaymentsFromSupabase().then(cloud => {
+          if (cloud && cloud.length > 0) setFormPayments(cloud);
+        });
+      }
+
+      if (bamRes.data && bamRes.data.length > 0) {
+        setBamPayments(bamRes.data.map(p => {
+          const isAkhwat = p.gender === 'Perempuan';
+          const totalCost = isAkhwat ? 6875000 : 6625000;
+          const amountPaid = p.amount || 0;
+          return {
+            id: p.id,
+            transactionNumber: p.id,
+            paymentDate: p.paymentDate || (p.createdAt ? p.createdAt.split('T')[0] : new Date().toISOString().split('T')[0]),
+            studentId: p.studentId,
+            studentName: p.studentName || 'Calon Murid',
+            registrationNumber: p.registrationNumber || 'SPMB',
+            gender: p.gender || 'Laki-laki',
+            totalBamCost: totalCost,
+            amountPaid,
+            installmentType: amountPaid >= totalCost ? 'Lunas' : 'Cicilan 1',
+            totalPaidToDate: amountPaid,
+            remainingBalance: Math.max(0, totalCost - amountPaid),
+            proofUrl: p.proofUrl,
+            notes: p.notes,
+          };
+        }));
+      } else {
+        fetchBamPaymentsFromSupabase().then(cloud => {
+          if (cloud && cloud.length > 0) setBamPayments(cloud);
+        });
+      }
+    }).catch(err => {
+      console.warn('Kepsek payments load error:', err);
+    }).finally(() => {
+      setIsLoadingPayments(false);
+    });
+  }, [students]);
 
   // Filtered lists
   const filteredForm = formPayments.filter(r => genderFilter === 'all' || r.gender === genderFilter);

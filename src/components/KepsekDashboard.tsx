@@ -98,7 +98,7 @@ export const KepsekDashboard: React.FC<KepsekDashboardProps> = ({
     return (
       <div className="min-h-screen bg-slate-50 py-8 px-4 sm:px-6 lg:px-8">
         <div className="max-w-7xl mx-auto space-y-6">
-          <KepsekPaymentReportSection schoolInfo={schoolInfo} />
+          <KepsekPaymentReportSection schoolInfo={schoolInfo} students={students} />
         </div>
       </div>
     );
@@ -262,7 +262,7 @@ export const KepsekDashboard: React.FC<KepsekDashboardProps> = ({
         </div>
 
         {/* Kepsek Detailed Financial Report Section */}
-        <KepsekPaymentReportSection schoolInfo={schoolInfo} />
+        <KepsekPaymentReportSection schoolInfo={schoolInfo} students={students} />
 
         {/* Official Executive Approval Box */}
 

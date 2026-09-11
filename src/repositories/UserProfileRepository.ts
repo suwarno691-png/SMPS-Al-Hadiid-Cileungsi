@@ -121,4 +121,87 @@ export const UserProfileRepository = {
       return { success: false, error: err instanceof Error ? err : new Error(String(err)) };
     }
   },
+
+  /**
+   * Menambahkan pengguna baru ke public.users
+   */
+  async create(user: Partial<UserAccount>): Promise<{ data: UserAccount | null; error: Error | null }> {
+    try {
+      const row: Record<string, any> = {
+        id: user.id || `usr_${Date.now()}`,
+        name: user.name || 'Pengguna',
+        email: (user.email || '').toLowerCase().trim(),
+        username: user.username?.toLowerCase().trim() || (user.email ? user.email.split('@')[0] : undefined),
+        phone: user.phone || '',
+        role: user.role || 'student',
+        registration_number: user.registrationNumber || null,
+        status: user.status || 'active',
+        must_change_password: !!user.mustChangePassword,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+
+      const { data, error } = await supabase
+        .from('users')
+        .insert(row)
+        .select()
+        .single();
+
+      if (error) {
+        return { data: null, error: new Error(error.message) };
+      }
+      return { data: mapRowToUserAccount(data), error: null };
+    } catch (err: any) {
+      return { data: null, error: err instanceof Error ? err : new Error(String(err)) };
+    }
+  },
+
+  /**
+   * Memperbarui data pengguna secara lengkap
+   */
+  async update(id: string, updates: Partial<UserAccount>): Promise<{ data: UserAccount | null; error: Error | null }> {
+    try {
+      const payload: Record<string, any> = { updated_at: new Date().toISOString() };
+      if (updates.name !== undefined) payload.name = updates.name;
+      if (updates.email !== undefined) payload.email = updates.email.toLowerCase().trim();
+      if (updates.username !== undefined) payload.username = updates.username.toLowerCase().trim();
+      if (updates.phone !== undefined) payload.phone = updates.phone;
+      if (updates.role !== undefined) payload.role = updates.role;
+      if (updates.status !== undefined) payload.status = updates.status;
+      if (updates.registrationNumber !== undefined) payload.registration_number = updates.registrationNumber;
+      if (updates.mustChangePassword !== undefined) payload.must_change_password = updates.mustChangePassword;
+
+      const { data, error } = await supabase
+        .from('users')
+        .update(payload)
+        .eq('id', id)
+        .select()
+        .maybeSingle();
+
+      if (error) {
+        return { data: null, error: new Error(error.message) };
+      }
+      if (!data) {
+        return { data: null, error: new Error('Pengguna tidak ditemukan atau sudah dihapus.') };
+      }
+      return { data: mapRowToUserAccount(data), error: null };
+    } catch (err: any) {
+      return { data: null, error: err instanceof Error ? err : new Error(String(err)) };
+    }
+  },
+
+  /**
+   * Menghapus akun pengguna dari public.users
+   */
+  async remove(id: string): Promise<{ success: boolean; error: Error | null }> {
+    try {
+      const { error } = await supabase.from('users').delete().eq('id', id);
+      if (error) {
+        return { success: false, error: new Error(error.message) };
+      }
+      return { success: true, error: null };
+    } catch (err: any) {
+      return { success: false, error: err instanceof Error ? err : new Error(String(err)) };
+    }
+  },
 };

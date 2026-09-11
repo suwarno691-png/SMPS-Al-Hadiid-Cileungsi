@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { SchoolInfo, CostBreakdown, TestSchedule, WebsiteConfig, UserAccount } from '../types';
+import { SchoolInfo, CostBreakdown, TestSchedule, WebsiteConfig, UserAccount, UserRole } from '../types';
 import { 
   Sparkles, CheckCircle2, Award, BookOpen, ShieldCheck, Download, Video,
   MessageSquare, ChevronRight, HelpCircle, GraduationCap, MapPin, 
@@ -16,7 +16,7 @@ interface LandingPageProps {
   currentUser?: UserAccount | null;
   onOpenAuth: (mode: 'login' | 'register') => void;
   onOpenWhatsApp: () => void;
-  onSelectRoleView: (role: 'student' | 'admin' | 'kepsek') => void;
+  onSelectRoleView: (role: UserRole) => void;
   onUpdateWebsiteConfig?: (updated: WebsiteConfig) => void;
   onUpdateSchoolInfo?: (updated: SchoolInfo) => void;
 }

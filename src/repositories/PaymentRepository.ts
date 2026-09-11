@@ -10,6 +10,7 @@ export interface PaymentItem {
   studentId: string;
   registrationNumber: string;
   studentName: string;
+  gender?: 'Laki-laki' | 'Perempuan';
   paymentType: 'form' | 'bam' | 'tuition' | 'other';
   amount: number;
   status: 'unpaid' | 'pending' | 'verified' | 'rejected';
@@ -32,6 +33,7 @@ export function mapRowToPayment(row: any): PaymentItem {
     studentId: row.student_id,
     registrationNumber: row.registration_number,
     studentName: row.student_name,
+    gender: row.student?.gender || row.gender || undefined,
     paymentType: row.payment_type,
     amount: Number(row.amount || 0),
     status: row.status,
@@ -51,19 +53,55 @@ export function mapRowToPayment(row: any): PaymentItem {
 
 export const PaymentRepository = {
   /**
-   * Mengambil daftar pembayaran. Admin dapat melihat semua, siswa hanya miliknya sendiri.
+   * Mengambil daftar pembayaran langsung dari database Supabase.
+   * Admin dapat melihat semua, siswa hanya miliknya sendiri.
+   * Mendukung filter berdasarkan studentId atau paymentType ('form' | 'bam' | 'tuition' | 'other').
    */
-  async list(studentId?: string): Promise<{ data: PaymentItem[]; error: Error | null }> {
+  async list(
+    filter?: string | { studentId?: string; paymentType?: 'form' | 'bam' | 'tuition' | 'other' }
+  ): Promise<{ data: PaymentItem[]; error: Error | null }> {
     try {
-      let query = supabase.from('payments').select('*').order('created_at', { ascending: false });
+      let query = supabase
+        .from('payments')
+        .select('*, student:students(gender)')
+        .order('created_at', { ascending: false });
 
-      if (studentId) {
-        query = query.eq('student_id', studentId);
+      let studentIdFilter: string | undefined;
+      let paymentTypeFilter: string | undefined;
+
+      if (typeof filter === 'string') {
+        if (['form', 'bam', 'tuition', 'other'].includes(filter.toLowerCase())) {
+          paymentTypeFilter = filter.toLowerCase();
+        } else {
+          studentIdFilter = filter;
+        }
+      } else if (typeof filter === 'object' && filter !== null) {
+        studentIdFilter = filter.studentId;
+        paymentTypeFilter = filter.paymentType;
+      }
+
+      if (studentIdFilter) {
+        query = query.eq('student_id', studentIdFilter);
+      }
+      if (paymentTypeFilter) {
+        query = query.eq('payment_type', paymentTypeFilter);
       }
 
       const { data, error } = await query;
       if (error) {
-        return { data: [], error: new Error(error.message) };
+        // Fallback without relation join if relation alias is not configured
+        let fallbackQuery = supabase.from('payments').select('*').order('created_at', { ascending: false });
+        if (studentIdFilter) {
+          fallbackQuery = fallbackQuery.eq('student_id', studentIdFilter);
+        }
+        if (paymentTypeFilter) {
+          fallbackQuery = fallbackQuery.eq('payment_type', paymentTypeFilter);
+        }
+        const { data: fallbackData, error: fallbackError } = await fallbackQuery;
+        if (fallbackError) {
+          return { data: [], error: new Error(fallbackError.message) };
+        }
+        return { data: (fallbackData || []).map(mapRowToPayment), error: null };
       }
 
       return { data: (data || []).map(mapRowToPayment), error: null };
@@ -73,17 +111,17 @@ export const PaymentRepository = {
   },
 
   /**
-   * Mengirim pembayaran baru (INSERT ONLY)
+   * Mengirim pembayaran baru (INSERT) ke tabel public.payments
    */
   async create(payment: Partial<PaymentItem>): Promise<{ data: PaymentItem | null; error: Error | null }> {
     try {
-      const row = {
+      const row: Record<string, any> = {
         student_id: payment.studentId,
         registration_number: payment.registrationNumber,
         student_name: payment.studentName,
         payment_type: payment.paymentType,
         amount: payment.amount,
-        status: 'pending',
+        status: payment.status || 'pending',
         payment_method: payment.paymentMethod || 'manual_transfer',
         bank_name: payment.bankName,
         account_number: payment.accountNumber,
@@ -94,9 +132,30 @@ export const PaymentRepository = {
         created_at: new Date().toISOString(),
       };
 
+      if (payment.id) {
+        row.id = payment.id;
+      }
+      if (payment.status === 'verified') {
+        row.verified_at = payment.verifiedAt || new Date().toISOString();
+        row.verified_by = payment.verifiedBy || 'Admin Panitia';
+      }
+
       const { data, error } = await supabase.from('payments').insert(row).select().single();
       if (error) {
         return { data: null, error: new Error(error.message) };
+      }
+
+      // Sync student status if needed
+      if (payment.studentId && payment.status === 'verified') {
+        if (payment.paymentType === 'form') {
+          await supabase.from('students').update({
+            form_payment_status: 'verified',
+          }).eq('id', payment.studentId);
+        } else if (payment.paymentType === 'bam') {
+          await supabase.from('students').update({
+            initial_payment_status: 'verified',
+          }).eq('id', payment.studentId);
+        }
       }
 
       return { data: mapRowToPayment(data), error: null };
@@ -138,6 +197,92 @@ export const PaymentRepository = {
 
       if (updateErr) {
         return { success: false, error: new Error(updateErr.message) };
+      }
+
+      return { success: true, error: null };
+    } catch (err: any) {
+      return { success: false, error: err instanceof Error ? err : new Error(String(err)) };
+    }
+  },
+
+  /**
+   * Memperbarui record pembayaran
+   */
+  async update(id: string, updates: Partial<PaymentItem>): Promise<{ data: PaymentItem | null; error: Error | null }> {
+    try {
+      const payload: Record<string, any> = { updated_at: new Date().toISOString() };
+      if (updates.amount !== undefined) payload.amount = updates.amount;
+      if (updates.status !== undefined) payload.status = updates.status;
+      if (updates.paymentMethod !== undefined) payload.payment_method = updates.paymentMethod;
+      if (updates.bankName !== undefined) payload.bank_name = updates.bankName;
+      if (updates.accountNumber !== undefined) payload.account_number = updates.accountNumber;
+      if (updates.senderName !== undefined) payload.sender_name = updates.senderName;
+      if (updates.proofUrl !== undefined) payload.proof_url = updates.proofUrl;
+      if (updates.paymentDate !== undefined) {
+        payload.payment_date = updates.paymentDate && updates.paymentDate.trim() ? updates.paymentDate.trim() : null;
+      }
+      if (updates.verifiedBy !== undefined) payload.verified_by = updates.verifiedBy;
+      if (updates.verifiedAt !== undefined) {
+        payload.verified_at = updates.verifiedAt && updates.verifiedAt.trim() ? updates.verifiedAt.trim() : null;
+      }
+      if (updates.notes !== undefined) payload.notes = updates.notes;
+
+      const { data, error } = await supabase
+        .from('payments')
+        .update(payload)
+        .eq('id', id)
+        .select()
+        .maybeSingle();
+
+      if (error) {
+        return { data: null, error: new Error(error.message) };
+      }
+      if (!data) {
+        return { data: null, error: new Error('Pembayaran tidak ditemukan atau sudah dihapus.') };
+      }
+
+      // Sync student status if status changed
+      if (updates.status && data.student_id) {
+        if (data.payment_type === 'form') {
+          await supabase.from('students').update({
+            form_payment_status: updates.status,
+          }).eq('id', data.student_id);
+        } else if (data.payment_type === 'bam') {
+          await supabase.from('students').update({
+            initial_payment_status: updates.status,
+          }).eq('id', data.student_id);
+        }
+      }
+
+      return { data: mapRowToPayment(data), error: null };
+    } catch (err: any) {
+      return { data: null, error: err instanceof Error ? err : new Error(String(err)) };
+    }
+  },
+
+  /**
+   * Menghapus record pembayaran dan memperbarui status siswa jika diperlukan
+   */
+  async remove(id: string): Promise<{ success: boolean; error: Error | null }> {
+    try {
+      // Dapatkan data pembayaran terlebih dahulu untuk mengupdate status siswa
+      const { data: existing } = await supabase.from('payments').select('*').eq('id', id).maybeSingle();
+
+      const { error } = await supabase.from('payments').delete().eq('id', id);
+      if (error) {
+        return { success: false, error: new Error(error.message) };
+      }
+
+      if (existing && existing.student_id) {
+        if (existing.payment_type === 'form') {
+          await supabase.from('students').update({
+            form_payment_status: 'unpaid',
+          }).eq('id', existing.student_id);
+        } else if (existing.payment_type === 'bam') {
+          await supabase.from('students').update({
+            initial_payment_status: 'unpaid',
+          }).eq('id', existing.student_id);
+        }
       }
 
       return { success: true, error: null };

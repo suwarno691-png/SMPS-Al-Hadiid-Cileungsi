@@ -315,6 +315,7 @@ export function saveUsersDb(users: UserAccount[]): void {
     return copy;
   });
   safeSetItem(KEYS.USERS_DB, JSON.stringify(sanitized));
+  syncUsersDbToSupabase(sanitized);
 }
 
 export function saveUserToDb(user: UserAccount): void {
@@ -516,22 +517,17 @@ export function saveWebsiteConfig(config: WebsiteConfig): void {
 export function getStoredFormPayments(): FormPaymentRecord[] {
   const data = safeGetItem(KEYS.FORM_PAYMENTS);
   if (!data) {
-    safeSetItem(KEYS.FORM_PAYMENTS, JSON.stringify(initialFormPayments));
-    return initialFormPayments;
+    return [];
   }
   try {
     const parsed = JSON.parse(data);
     if (Array.isArray(parsed)) {
-      if (parsed.some((f) => f.id === 'fpay_001' || f.studentId === 'std_001')) {
-        const cleaned = parsed.filter((f) => !f.id.startsWith('fpay_00') && f.studentId !== 'std_001');
-        safeSetItem(KEYS.FORM_PAYMENTS, JSON.stringify(cleaned));
-        return cleaned;
-      }
-      return parsed;
+      const cleaned = parsed.filter((f) => !f.id.startsWith('fpay_00') && f.studentId !== 'std_001');
+      return cleaned;
     }
-    return initialFormPayments;
+    return [];
   } catch {
-    return initialFormPayments;
+    return [];
   }
 }
 
@@ -543,22 +539,17 @@ export function saveFormPayments(records: FormPaymentRecord[]): void {
 export function getStoredBamPayments(): BamPaymentRecord[] {
   const data = safeGetItem(KEYS.BAM_PAYMENTS);
   if (!data) {
-    safeSetItem(KEYS.BAM_PAYMENTS, JSON.stringify(initialBamPayments));
-    return initialBamPayments;
+    return [];
   }
   try {
     const parsed = JSON.parse(data);
     if (Array.isArray(parsed)) {
-      if (parsed.some((b) => b.id === 'bampay_001' || b.studentId === 'std_001')) {
-        const cleaned = parsed.filter((b) => !b.id.startsWith('bampay_00') && b.studentId !== 'std_001');
-        safeSetItem(KEYS.BAM_PAYMENTS, JSON.stringify(cleaned));
-        return cleaned;
-      }
-      return parsed;
+      const cleaned = parsed.filter((b) => !b.id.startsWith('bampay_00') && b.studentId !== 'std_001');
+      return cleaned;
     }
-    return initialBamPayments;
+    return [];
   } catch {
-    return initialBamPayments;
+    return [];
   }
 }
 

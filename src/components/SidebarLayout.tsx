@@ -337,7 +337,11 @@ export const SidebarLayout: React.FC<SidebarLayoutProps> = ({
                       }
                     } else if (item.id === 'download_form') {
                       const isFormSubmitted = studentData.status !== 'draft' && studentData.status !== 'pending_payment';
-                      const isDownloadUnlocked = studentData.isFormVerifiedByAdmin === true || (studentData.formPaymentStatus === 'verified' && isFormSubmitted);
+                      const isDownloadUnlocked =
+                        studentData.formPaymentStatus === 'verified' ||
+                        studentData.isFormVerified === true ||
+                        studentData.isFormVerifiedByAdmin === true ||
+                        (isFormSubmitted && Boolean(studentData.formPaymentProofUrl));
                       if (!isDownloadUnlocked) {
                         studentBadge = <span className="text-[9px] bg-slate-800 text-slate-400 px-1.5 py-0.5 rounded border border-slate-700 flex items-center gap-0.5 font-bold"><Lock className="w-2.5 h-2.5 text-amber-500" /> TERKUNCI</span>;
                       } else {

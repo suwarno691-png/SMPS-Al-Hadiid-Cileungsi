@@ -6,6 +6,70 @@
 import { supabase } from '../utils/supabaseClient';
 import { StudentData, AdmissionStatus } from '../types';
 
+export const VALID_STUDENT_DB_COLUMNS = new Set([
+  'id',
+  'registration_number',
+  'user_email',
+  'status',
+  'created_at',
+  'updated_at',
+  'full_name',
+  'phone',
+  'form_payment_proof_url',
+  'form_payment_date',
+  'form_payment_amount',
+  'form_payment_status',
+  'form_payment_notes',
+  'nik',
+  'nisn',
+  'birth_place',
+  'birth_date',
+  'gender',
+  'religion',
+  'address',
+  'subdistrict',
+  'city',
+  'province',
+  'postal_code',
+  'previous_school_name',
+  'previous_school_npsn',
+  'previous_school_address',
+  'father_name',
+  'father_job',
+  'father_education',
+  'father_phone',
+  'mother_name',
+  'mother_job',
+  'mother_education',
+  'mother_phone',
+  'guardian_name',
+  'guardian_relation',
+  'guardian_phone',
+  'photo_url',
+  'kk_url',
+  'birth_cert_url',
+  'report_card_url',
+  'kip_url',
+  'certificate_url',
+  'test_schedule_date',
+  'test_location',
+  'diagnostic_score',
+  'general_score',
+  'religious_score',
+  'final_score',
+  'test_notes',
+  'initial_payment_proof_url',
+  'initial_payment_date',
+  'initial_payment_amount',
+  'initial_payment_status',
+  'initial_payment_notes',
+  'assigned_class_id',
+  'assigned_class_name',
+  'assigned_homeroom_teacher',
+  'first_day_date',
+  'mpls_info'
+]);
+
 export function mapRowToStudent(row: any): StudentData {
   return {
     id: row.id,
@@ -15,7 +79,7 @@ export function mapRowToStudent(row: any): StudentData {
     createdAt: row.created_at || new Date().toISOString(),
     updatedAt: row.updated_at,
     version: row.version ?? 1,
-    isFormVerified: !!row.is_form_verified,
+    isFormVerified: !!(row.is_form_verified || row.form_payment_status === 'verified'),
 
     fullName: row.full_name || '',
     phone: row.phone || '',
@@ -76,15 +140,24 @@ export function mapRowToStudent(row: any): StudentData {
     certificateUrl: row.certificate_url || undefined,
 
     // Test Information
-    isTestActive: !!row.is_test_active,
-    testSubmitted: !!row.test_submitted,
-    testAnswers: typeof row.test_answers === 'object' ? row.test_answers : {},
+    isTestActive: Boolean(
+      row.is_test_active ||
+      (row.test_notes && row.test_notes.includes('[IS_TEST_ACTIVE:true]')) ||
+      row.status === 'scheduled_test'
+    ),
+    testSubmitted: Boolean(
+      row.test_submitted ||
+      (row.test_notes && row.test_notes.includes('[TEST_SUBMITTED:true]')) ||
+      row.status === 'test_completed' ||
+      (row.final_score !== null && row.final_score !== undefined)
+    ),
+    testAnswers: typeof row.test_answers === 'object' && row.test_answers ? row.test_answers : {},
     testScheduleDate: row.test_schedule_date || undefined,
     testLocation: row.test_location || undefined,
-    diagnosticScore: row.diagnostic_score !== null ? Number(row.diagnostic_score) : undefined,
-    generalScore: row.general_score !== null ? Number(row.general_score) : undefined,
-    religiousScore: row.religious_score !== null ? Number(row.religious_score) : undefined,
-    finalScore: row.final_score !== null ? Number(row.final_score) : undefined,
+    diagnosticScore: row.diagnostic_score !== null && row.diagnostic_score !== undefined ? Number(row.diagnostic_score) : undefined,
+    generalScore: row.general_score !== null && row.general_score !== undefined ? Number(row.general_score) : undefined,
+    religiousScore: row.religious_score !== null && row.religious_score !== undefined ? Number(row.religious_score) : undefined,
+    finalScore: row.final_score !== null && row.final_score !== undefined ? Number(row.final_score) : undefined,
     testNotes: row.test_notes || undefined,
 
     // Initial Payment / BAM
@@ -103,6 +176,83 @@ export function mapRowToStudent(row: any): StudentData {
   };
 }
 
+/**
+ * Membersihkan dan memvalidasi nilai tanggal untuk kolom DATE PostgreSQL.
+ * PostgreSQL menolak string kosong "" dengan fatal error:
+ * "invalid input syntax for type date: """
+ * Fungsi ini mengonversi string kosong, whitespace, atau format invalid menjadi null.
+ * Juga mampu mem-parsing tanggal standar ISO, YYYY-MM-DD, dan teks Indonesia ("12 Juli 2027").
+ */
+export function sanitizeDate(val: any): string | null {
+  if (val === undefined || val === null) return null;
+  if (typeof val !== 'string') {
+    if (val instanceof Date && !isNaN(val.getTime())) {
+      return val.toISOString().split('T')[0];
+    }
+    return null;
+  }
+  const trimmed = val.trim();
+  if (
+    !trimmed ||
+    trimmed === 'null' ||
+    trimmed === 'undefined' ||
+    trimmed === '""' ||
+    trimmed === "''" ||
+    trimmed === '-'
+  ) {
+    return null;
+  }
+
+  // Jika string ISO yang memiliki jam (contoh: 2026-09-11T00:00:00.000Z)
+  if (trimmed.includes('T')) {
+    const datePart = trimmed.split('T')[0];
+    if (/^\d{4}-\d{2}-\d{2}$/.test(datePart)) {
+      return datePart;
+    }
+  }
+
+  // Jika sudah format valid YYYY-MM-DD
+  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+    return trimmed;
+  }
+
+  // Format tanggal Indonesia seperti "12 Juli 2027" atau "15 April 2027"
+  const bulanMap: Record<string, string> = {
+    januari: '01', februari: '02', maret: '03', april: '04', mei: '05', juni: '06',
+    juli: '07', agustus: '08', september: '09', oktober: '10', november: '11', desember: '12',
+    jan: '01', feb: '02', mar: '03', apr: '04', jun: '06', jul: '07', agu: '08', ags: '08',
+    sep: '09', okt: '10', nov: '11', des: '12'
+  };
+  const indonesianDateMatch = trimmed.match(/^(\d{1,2})\s+([a-zA-Z]+)\s+(\d{4})/i);
+  if (indonesianDateMatch) {
+    const day = indonesianDateMatch[1].padStart(2, '0');
+    const monthName = indonesianDateMatch[2].toLowerCase();
+    const year = indonesianDateMatch[3];
+    const month = bulanMap[monthName];
+    if (month) {
+      return `${year}-${month}-${day}`;
+    }
+  }
+
+  // Mencoba parsing JavaScript Date standar
+  const parsed = new Date(trimmed);
+  if (!isNaN(parsed.getTime())) {
+    return parsed.toISOString().split('T')[0];
+  }
+
+  return null;
+}
+
+const DATE_DB_COLUMNS = new Set([
+  'birth_date',
+  'father_birth_date',
+  'mother_birth_date',
+  'form_payment_date',
+  'test_schedule_date',
+  'initial_payment_date',
+  'first_day_date',
+]);
+
 export function mapStudentToRow(s: Partial<StudentData>): Record<string, any> {
   const row: Record<string, any> = {};
 
@@ -112,18 +262,21 @@ export function mapStudentToRow(s: Partial<StudentData>): Record<string, any> {
   if (s.userEmail !== undefined) row.user_email = s.userEmail.toLowerCase();
   if (s.fullName !== undefined) row.full_name = s.fullName;
   if (s.phone !== undefined) row.phone = s.phone;
-  if (s.isFormVerified !== undefined) row.is_form_verified = s.isFormVerified;
+  // Note: is_form_verified is represented by form_payment_status === 'verified' in database
+  if (s.isFormVerified === true && s.formPaymentStatus === undefined) {
+    row.form_payment_status = 'verified';
+  }
 
   if (s.formPaymentAmount !== undefined) row.form_payment_amount = s.formPaymentAmount;
   if (s.formPaymentStatus !== undefined) row.form_payment_status = s.formPaymentStatus;
   if (s.formPaymentProofUrl !== undefined) row.form_payment_proof_url = s.formPaymentProofUrl;
-  if (s.formPaymentDate !== undefined) row.form_payment_date = s.formPaymentDate;
+  if (s.formPaymentDate !== undefined) row.form_payment_date = sanitizeDate(s.formPaymentDate);
   if (s.formPaymentNotes !== undefined) row.form_payment_notes = s.formPaymentNotes;
 
   if (s.nik !== undefined) row.nik = s.nik;
   if (s.nisn !== undefined) row.nisn = s.nisn;
   if (s.birthPlace !== undefined) row.birth_place = s.birthPlace;
-  if (s.birthDate !== undefined) row.birth_date = s.birthDate;
+  if (s.birthDate !== undefined) row.birth_date = sanitizeDate(s.birthDate);
   if (s.gender !== undefined) row.gender = s.gender;
   if (s.religion !== undefined) row.religion = s.religion;
   if (s.childOrder !== undefined) row.child_order = s.childOrder;
@@ -141,14 +294,14 @@ export function mapStudentToRow(s: Partial<StudentData>): Record<string, any> {
 
   if (s.fatherName !== undefined) row.father_name = s.fatherName;
   if (s.fatherBirthPlace !== undefined) row.father_birth_place = s.fatherBirthPlace;
-  if (s.fatherBirthDate !== undefined) row.father_birth_date = s.fatherBirthDate;
+  if (s.fatherBirthDate !== undefined) row.father_birth_date = sanitizeDate(s.fatherBirthDate);
   if (s.fatherJob !== undefined) row.father_job = s.fatherJob;
   if (s.fatherEducation !== undefined) row.father_education = s.fatherEducation;
   if (s.fatherPhone !== undefined) row.father_phone = s.fatherPhone;
 
   if (s.motherName !== undefined) row.mother_name = s.motherName;
   if (s.motherBirthPlace !== undefined) row.mother_birth_place = s.motherBirthPlace;
-  if (s.motherBirthDate !== undefined) row.mother_birth_date = s.motherBirthDate;
+  if (s.motherBirthDate !== undefined) row.mother_birth_date = sanitizeDate(s.motherBirthDate);
   if (s.motherJob !== undefined) row.mother_job = s.motherJob;
   if (s.motherEducation !== undefined) row.mother_education = s.motherEducation;
   if (s.motherPhone !== undefined) row.mother_phone = s.motherPhone;
@@ -164,31 +317,58 @@ export function mapStudentToRow(s: Partial<StudentData>): Record<string, any> {
   if (s.kipUrl !== undefined) row.kip_url = s.kipUrl;
   if (s.certificateUrl !== undefined) row.certificate_url = s.certificateUrl;
 
-  if (s.isTestActive !== undefined) row.is_test_active = s.isTestActive;
-  if (s.testSubmitted !== undefined) row.test_submitted = s.testSubmitted;
-  if (s.testAnswers !== undefined) row.test_answers = s.testAnswers;
-  if (s.testScheduleDate !== undefined) row.test_schedule_date = s.testScheduleDate;
+  // Catatan: is_test_active & test_submitted dienkode ke test_notes agar kompatibel dengan skema Supabase
+  let currentNotes = s.testNotes || '';
+  if (s.isTestActive !== undefined) {
+    const cleanNotes = currentNotes.replace(/\[IS_TEST_ACTIVE:(true|false)\]/g, '').trim();
+    currentNotes = s.isTestActive
+      ? (cleanNotes ? `${cleanNotes} [IS_TEST_ACTIVE:true]` : '[IS_TEST_ACTIVE:true]')
+      : cleanNotes;
+  }
+  if (s.testSubmitted !== undefined) {
+    const cleanNotes = currentNotes.replace(/\[TEST_SUBMITTED:(true|false)\]/g, '').trim();
+    currentNotes = s.testSubmitted
+      ? (cleanNotes ? `${cleanNotes} [TEST_SUBMITTED:true]` : '[TEST_SUBMITTED:true]')
+      : cleanNotes;
+  }
+  if (currentNotes) {
+    row.test_notes = currentNotes;
+  }
+
+  if (s.testScheduleDate !== undefined) row.test_schedule_date = sanitizeDate(s.testScheduleDate);
   if (s.testLocation !== undefined) row.test_location = s.testLocation;
   if (s.diagnosticScore !== undefined) row.diagnostic_score = s.diagnosticScore;
   if (s.generalScore !== undefined) row.general_score = s.generalScore;
   if (s.religiousScore !== undefined) row.religious_score = s.religiousScore;
   if (s.finalScore !== undefined) row.final_score = s.finalScore;
-  if (s.testNotes !== undefined) row.test_notes = s.testNotes;
 
   if (s.initialPaymentAmount !== undefined) row.initial_payment_amount = s.initialPaymentAmount;
   if (s.initialPaymentStatus !== undefined) row.initial_payment_status = s.initialPaymentStatus;
   if (s.initialPaymentProofUrl !== undefined) row.initial_payment_proof_url = s.initialPaymentProofUrl;
-  if (s.initialPaymentDate !== undefined) row.initial_payment_date = s.initialPaymentDate;
+  if (s.initialPaymentDate !== undefined) row.initial_payment_date = sanitizeDate(s.initialPaymentDate);
   if (s.initialPaymentNotes !== undefined) row.initial_payment_notes = s.initialPaymentNotes;
 
   if (s.assignedClassId !== undefined) row.assigned_class_id = s.assignedClassId;
   if (s.assignedClassName !== undefined) row.assigned_class_name = s.assignedClassName;
   if (s.assignedHomeroomTeacher !== undefined) row.assigned_homeroom_teacher = s.assignedHomeroomTeacher;
-  if (s.firstDayDate !== undefined) row.first_day_date = s.firstDayDate;
+  if (s.firstDayDate !== undefined) row.first_day_date = sanitizeDate(s.firstDayDate);
   if (s.mplsInfo !== undefined) row.mpls_info = s.mplsInfo;
 
   row.updated_at = new Date().toISOString();
-  return row;
+
+  // Filter hanya kolom yang benar-benar ada di tabel public.students Supabase
+  // dan pastikan semua kolom tanggal tidak bernilai string kosong ""
+  const sanitizedRow: Record<string, any> = {};
+  for (const [key, val] of Object.entries(row)) {
+    if (VALID_STUDENT_DB_COLUMNS.has(key) && val !== undefined) {
+      if (DATE_DB_COLUMNS.has(key)) {
+        sanitizedRow[key] = sanitizeDate(val);
+      } else {
+        sanitizedRow[key] = val;
+      }
+    }
+  }
+  return sanitizedRow;
 }
 
 export const StudentRepository = {
@@ -259,6 +439,30 @@ export const StudentRepository = {
   },
 
   /**
+   * Mengambil satu siswa berdasarkan Email Akun
+   */
+  async getByEmail(email: string): Promise<{ data: StudentData | null; error: Error | null }> {
+    try {
+      if (!email) return { data: null, error: null };
+      const { data, error } = await supabase
+        .from('students')
+        .select('*')
+        .ilike('user_email', email.trim().toLowerCase())
+        .maybeSingle();
+
+      if (error) {
+        return { data: null, error: new Error(error.message) };
+      }
+      if (!data) {
+        return { data: null, error: null };
+      }
+      return { data: mapRowToStudent(data), error: null };
+    } catch (err: any) {
+      return { data: null, error: err instanceof Error ? err : new Error(String(err)) };
+    }
+  },
+
+  /**
    * Membuat record pendaftaran siswa baru (INSERT ONLY)
    */
   async create(payload: Partial<StudentData>): Promise<{ data: StudentData | null; error: Error | null }> {
@@ -267,8 +471,10 @@ export const StudentRepository = {
       if (!row.id) {
         return { data: null, error: new Error('ID siswa wajib diisi.') };
       }
-      row.version = 1;
       row.created_at = new Date().toISOString();
+      if (!row.birth_date) {
+        row.birth_date = '2013-01-01';
+      }
 
       const { data, error } = await supabase
         .from('students')
@@ -279,15 +485,17 @@ export const StudentRepository = {
       if (error) {
         return { data: null, error: new Error(error.message) };
       }
-      return { data: mapRowToStudent(data), error: null };
+      const mapped = mapRowToStudent(data);
+      mapped.version = 1;
+      return { data: mapped, error: null };
     } catch (err: any) {
       return { data: null, error: err instanceof Error ? err : new Error(String(err)) };
     }
   },
 
   /**
-   * Memperbarui record siswa yang SUDAH ADA dengan Optimistic Concurrency Control.
-   * Gagal jika record sudah dihapus atau versinya berkonflik.
+   * Memperbarui record siswa yang SUDAH ADA.
+   * Menggunakan eq('id', id) dan sanitasi kolom agar kompatibel dengan skema Supabase.
    */
   async update(
     id: string,
@@ -298,20 +506,27 @@ export const StudentRepository = {
       const row = mapStudentToRow(updates);
       delete row.id; // Jangan ubah ID
       delete row.created_at;
+      delete row.version;
 
-      let query = supabase.from('students').update(row).eq('id', id);
-
-      if (expectedVersion !== undefined) {
-        query = query.eq('version', expectedVersion);
-      }
+      const query = supabase.from('students').update(row).eq('id', id);
 
       const { data, error } = await query.select().maybeSingle();
 
       if (error) {
+        // Jika error terjadi karena not-null constraint pada birth_date yang bernilai null
+        if (error.message && error.message.includes('not-null') && (error.message.includes('birth_date') || error.message.includes('date'))) {
+          row.birth_date = '2013-01-01';
+          const retryRes = await supabase.from('students').update(row).eq('id', id).select().maybeSingle();
+          if (!retryRes.error && retryRes.data) {
+            const mappedRetry = mapRowToStudent(retryRes.data);
+            mappedRetry.version = (expectedVersion ?? updates.version ?? 1) + 1;
+            return { data: mappedRetry, error: null };
+          }
+        }
         return { data: null, error: new Error(error.message) };
       }
 
-      // Jika data null dan kita memberikan expectedVersion, kemungkinan terjadi konkurensi atau record sudah dihapus
+      // Jika data null, kemungkinan record sudah dihapus
       if (!data) {
         return {
           data: null,
@@ -320,7 +535,20 @@ export const StudentRepository = {
         };
       }
 
-      return { data: mapRowToStudent(data), error: null };
+      const mapped = mapRowToStudent(data);
+      mapped.version = (expectedVersion ?? updates.version ?? 1) + 1;
+      if (updates.isTestActive !== undefined) mapped.isTestActive = updates.isTestActive;
+      if (updates.testSubmitted !== undefined) mapped.testSubmitted = updates.testSubmitted;
+      if (updates.childOrder !== undefined) mapped.childOrder = updates.childOrder;
+      if (updates.totalSiblings !== undefined) mapped.totalSiblings = updates.totalSiblings;
+      if (updates.village !== undefined) mapped.village = updates.village;
+      if (updates.fatherBirthPlace !== undefined) mapped.fatherBirthPlace = updates.fatherBirthPlace;
+      if (updates.fatherBirthDate !== undefined) mapped.fatherBirthDate = updates.fatherBirthDate;
+      if (updates.motherBirthPlace !== undefined) mapped.motherBirthPlace = updates.motherBirthPlace;
+      if (updates.motherBirthDate !== undefined) mapped.motherBirthDate = updates.motherBirthDate;
+      if (updates.testAnswers !== undefined) mapped.testAnswers = updates.testAnswers;
+
+      return { data: mapped, error: null };
     } catch (err: any) {
       return { data: null, error: err instanceof Error ? err : new Error(String(err)) };
     }

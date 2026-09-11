@@ -7,8 +7,10 @@ import {
   fetchAuditLogsFromSupabase,
   recordAuditLog,
   supabase,
-  ensureSupabaseAuthSession
+  ensureSupabaseAuthSession,
+  fetchUsersDbFromSupabase
 } from '../utils/supabaseClient';
+import { UserProfileRepository } from '../repositories/UserProfileRepository';
 import {
   ShieldCheck, ShieldAlert, Key, Edit, Lock, UserCheck, UserX, RefreshCw,
   Search, Shield, CheckCircle2, XCircle, AlertCircle, History as HistoryIcon, User, Check, X, Info, Trash2, GraduationCap
@@ -53,7 +55,23 @@ export const AccountSettingsSection: React.FC<AccountSettingsSectionProps> = ({
     loadAuditLogs();
   }, []);
 
-  const refreshAccountsList = () => {
+  const refreshAccountsList = async () => {
+    try {
+      const { data, error } = await UserProfileRepository.listForAdmin();
+      if (!error && data && data.length > 0) {
+        setUsers(data);
+        saveUsersDb(data);
+        return;
+      }
+      const cloudUsers = await fetchUsersDbFromSupabase();
+      if (cloudUsers && cloudUsers.length > 0) {
+        setUsers(cloudUsers);
+        saveUsersDb(cloudUsers);
+        return;
+      }
+    } catch (e) {
+      console.warn('refreshAccountsList error:', e);
+    }
     const allUsers = getUsersDb();
     setUsers(allUsers);
   };
@@ -164,6 +182,15 @@ export const AccountSettingsSection: React.FC<AccountSettingsSectionProps> = ({
 
   // Handle Edit/Reset Password
   const handleOpenEditPassword = async (user: UserAccount) => {
+    // Try to ensure active Supabase session in background if possible
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session && currentUser && currentUser.password) {
+      await ensureSupabaseAuthSession(
+        currentUser.email,
+        currentUser.password,
+        currentUser
+      );
+    }
     setSelectedUser(user);
     setOldPassword('');
     setNewPassword('');
@@ -190,6 +217,16 @@ export const AccountSettingsSection: React.FC<AccountSettingsSectionProps> = ({
     if (newPassword !== confirmPassword) {
       setFormError('Konfirmasi password tidak sesuai.');
       return;
+    }
+
+    // Try background refresh of Supabase session if password is present
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session && currentUser && currentUser.password) {
+      await ensureSupabaseAuthSession(
+        currentUser.email,
+        currentUser.password,
+        currentUser
+      );
     }
 
     // SweetAlert2 Confirmation
@@ -221,18 +258,18 @@ export const AccountSettingsSection: React.FC<AccountSettingsSectionProps> = ({
       return;
     }
 
-    // Local DB Update without plaintext password
+    // Local DB Update with new password
     const allUsers = getUsersDb();
     const updatedUsers = allUsers.map(u =>
       u.id === selectedUser.id
-        ? { ...u, mustChangePassword: false }
+        ? { ...u, password: newPassword, mustChangePassword: false }
         : u
     );
     saveUsersDb(updatedUsers);
 
     // Update currentUser in localStorage if updating own password
     if (currentUser && selectedUser.id === currentUser.id) {
-      const updatedSelf = { ...currentUser, mustChangePassword: false };
+      const updatedSelf = { ...currentUser, password: newPassword, mustChangePassword: false };
       saveUserToDb(updatedSelf);
     }
 

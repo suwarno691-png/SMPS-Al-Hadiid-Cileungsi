@@ -1,12 +1,17 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { StudentData, BamPaymentRecord, BamInstallmentType, SchoolInfo, CostBreakdown } from '../../types';
 import { getStoredBamPayments, saveBamPayments, getStoredCostBreakdown, saveCostBreakdown, saveSchoolInfo, getStoredSchoolInfo, getStoredFormPayments } from '../../utils/storage';
+import { PaymentRepository } from '../../repositories/PaymentRepository';
+import { fetchBamPaymentsFromSupabase } from '../../utils/supabaseClient';
 import {
   FileText, Plus, Search, Filter, CheckCircle2,
   Calendar, DollarSign, Calculator, Trash2, Database, Pencil,
-  Upload, Download, Save, AlertCircle, Info, Eye, Layers, ShieldCheck
+  Upload, Download, Save, AlertCircle, Info, Eye, Layers, ShieldCheck,
+  Image as ImageIcon, ZoomIn
 } from 'lucide-react';
 import { PaymentSqlModal } from './PaymentSqlModal';
+import { PaymentProofModal, ProofModalData } from './PaymentProofModal';
+import { getStoredPaymentProofs, downloadPaymentProof } from '../../utils/paymentProofStorage';
 
 interface AdminBamPaymentSectionProps {
   students: StudentData[];
@@ -24,14 +29,123 @@ export const AdminBamPaymentSection: React.FC<AdminBamPaymentSectionProps> = ({
   costBreakdowns: propCostBreakdowns,
 }) => {
   const [records, setRecords] = useState<BamPaymentRecord[]>(() => getStoredBamPayments());
+
+  // Function to merge BAM records from Supabase, localStorage, payment proofs, and students
+  const mergeAllBamRecords = (supabaseData?: any[]) => {
+    const localBamPayments = getStoredBamPayments();
+    const storedProofs = getStoredPaymentProofs().filter(p => p.paymentType === 'bam');
+    const recordMap = new Map<string, BamPaymentRecord>();
+
+    // 1. Dari Supabase payments (Primary SSOT)
+    if (supabaseData && supabaseData.length > 0) {
+      supabaseData.forEach(p => {
+        const key = p.studentId || p.registrationNumber || p.id;
+        const isAkhwat = p.gender === 'Perempuan';
+        const totalCost = isAkhwat ? 6875000 : 6625000;
+        const amountPaid = p.amount || 0;
+
+        recordMap.set(key, {
+          id: p.id,
+          transactionNumber: p.transactionNumber || p.id,
+          paymentDate: p.paymentDate ? p.paymentDate.split('T')[0] : (p.createdAt ? p.createdAt.split('T')[0] : new Date().toISOString().split('T')[0]),
+          studentId: p.studentId,
+          studentName: p.studentName || 'Calon Murid',
+          registrationNumber: p.registrationNumber || 'SPMB',
+          gender: p.gender || 'Laki-laki',
+          totalBamCost: totalCost,
+          amountPaid: amountPaid,
+          installmentType: amountPaid >= totalCost ? 'Lunas' : 'Cicilan 1',
+          totalPaidToDate: amountPaid,
+          remainingBalance: Math.max(0, totalCost - amountPaid),
+          proofUrl: p.proofUrl,
+          notes: p.notes,
+        });
+      });
+    }
+
+    // 2. Dari students prop yang tersimpan di database Supabase
+    students.forEach(st => {
+      if (st.initialPaymentProofUrl || st.initialPaymentStatus === 'verified' || st.status === 're_registered') {
+        const key = st.id || st.registrationNumber;
+        const existing = recordMap.get(key);
+        const isAkhwat = st.gender === 'Perempuan';
+        const totalCost = existing?.totalBamCost || st.initialPaymentAmount || (isAkhwat ? 6875000 : 6625000);
+        const amountPaid = st.initialPaymentAmount || existing?.amountPaid || totalCost;
+
+        if (existing) {
+          if (st.initialPaymentProofUrl) existing.proofUrl = st.initialPaymentProofUrl;
+          if (st.gender) existing.gender = st.gender === 'Perempuan' ? 'Perempuan' : 'Laki-laki';
+          if (st.fullName) existing.studentName = st.fullName;
+        } else {
+          recordMap.set(key, {
+            id: `bam_std_${st.id}`,
+            transactionNumber: `TRX-BAM-${st.registrationNumber?.slice(-6) || Date.now().toString().slice(-6)}`,
+            paymentDate: st.initialPaymentDate || new Date().toISOString().split('T')[0],
+            studentId: st.id,
+            studentName: st.fullName,
+            registrationNumber: st.registrationNumber || 'SPMB',
+            gender: st.gender === 'Perempuan' ? 'Perempuan' : 'Laki-laki',
+            totalBamCost: totalCost,
+            amountPaid: amountPaid,
+            installmentType: amountPaid >= totalCost ? 'Lunas' : 'Cicilan 1',
+            totalPaidToDate: amountPaid,
+            remainingBalance: Math.max(0, totalCost - amountPaid),
+            proofUrl: st.initialPaymentProofUrl,
+            notes: st.initialPaymentNotes || 'Bukti Transfer BAM Calon Murid',
+          });
+        }
+      }
+    });
+
+    // 3. Dari stored payment proofs jika ada
+    storedProofs.forEach(sp => {
+      const key = sp.studentId || sp.registrationNumber || sp.id;
+      const existing = recordMap.get(key);
+      if (existing) {
+        if (!existing.proofUrl) existing.proofUrl = sp.dataUrl;
+      }
+    });
+
+    // 4. Fallback jika map masih kosong
+    if (recordMap.size === 0 && localBamPayments.length > 0) {
+      localBamPayments.forEach(r => {
+        const key = r.studentId || r.registrationNumber || r.id;
+        recordMap.set(key, { ...r });
+      });
+    }
+
+    const merged = Array.from(recordMap.values()).sort((a, b) => (b.paymentDate || '').localeCompare(a.paymentDate || ''));
+    setRecords(merged);
+    saveBamPayments(merged);
+  };
+
+  // Load from Supabase on mount & synchronize
+  useEffect(() => {
+    PaymentRepository.list('bam').then(({ data }) => {
+      if (data && data.length > 0) {
+        mergeAllBamRecords(data);
+      } else {
+        fetchBamPaymentsFromSupabase().then(cloudData => {
+          mergeAllBamRecords(cloudData || []);
+        });
+      }
+    }).catch(err => {
+      console.warn('Supabase BAM load:', err);
+      fetchBamPaymentsFromSupabase().then(cloudData => {
+        mergeAllBamRecords(cloudData || []);
+      });
+    });
+  }, [students]);
+
   const [showModal, setShowModal] = useState(false);
   const [showSqlModal, setShowSqlModal] = useState(false);
   const [showOfficialDocModal, setShowOfficialDocModal] = useState(false);
-  const [previewProofUrl, setPreviewProofUrl] = useState<string | null>(null);
+  const [activeProofData, setActiveProofData] = useState<ProofModalData | null>(null);
   const [editingRecordId, setEditingRecordId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [filterGender, setFilterGender] = useState<'all' | 'Laki-laki' | 'Perempuan'>('all');
   const [filterType, setFilterType] = useState<'all' | 'Lunas' | 'Cicilan'>('all');
+  const [filterProof, setFilterProof] = useState<'all' | 'has_proof' | 'no_proof'>('all');
 
   const handleVerifyStudentBam = (studentId: string, isVerified: boolean) => {
     const targetStudent = students.find(s => s.id === studentId);
@@ -52,6 +166,21 @@ export const AdminBamPaymentSection: React.FC<AdminBamPaymentSectionProps> = ({
     });
 
     onUpdateStudents(updatedStudents);
+
+    // Sync to Supabase
+    PaymentRepository.create({
+      studentId: targetStudent.id,
+      registrationNumber: targetStudent.registrationNumber || `SPMB${Date.now().toString().slice(-8)}`,
+      studentName: targetStudent.fullName,
+      paymentType: 'bam',
+      amount: totalCost,
+      status: isVerified ? 'verified' : 'rejected',
+      paymentMethod: 'Transfer Bank',
+      bankName: 'BSI',
+      paymentDate: targetStudent.initialPaymentDate || new Date().toISOString().split('T')[0],
+      proofUrl: targetStudent.initialPaymentProofUrl,
+      notes: targetStudent.initialPaymentNotes || 'Verifikasi Otomatis Bukti BAM Admin',
+    }).catch(err => console.warn('PaymentRepository BAM verify sync error:', err));
 
     if (isVerified) {
       const existingRecord = records.find(r => r.studentId === studentId || r.studentName.toLowerCase() === targetStudent.fullName.toLowerCase());
@@ -89,6 +218,20 @@ export const AdminBamPaymentSection: React.FC<AdminBamPaymentSectionProps> = ({
   // Cost Breakdown Items (Rincian Biaya Awal Masuk) State
   const [costItems, setCostItems] = useState<CostBreakdown[]>(() => propCostBreakdowns || getStoredCostBreakdown());
   const [isEditingNominals, setIsEditingNominals] = useState<boolean>(false);
+
+  useEffect(() => {
+    if (propCostBreakdowns && propCostBreakdowns.length > 0) {
+      setCostItems(propCostBreakdowns);
+    }
+  }, [propCostBreakdowns]);
+
+  useEffect(() => {
+    if (propSchoolInfo) {
+      if (propSchoolInfo.bamBrochureUrl) setBamDocUrl(propSchoolInfo.bamBrochureUrl);
+      if (propSchoolInfo.bamBrochureFileName) setBamDocName(propSchoolInfo.bamBrochureFileName);
+      if (propSchoolInfo.bamBrochureFileSize) setBamDocSize(propSchoolInfo.bamBrochureFileSize);
+    }
+  }, [propSchoolInfo]);
 
   // Quick Edit Nominal Modal State
   const [showQuickNominalModal, setShowQuickNominalModal] = useState(false);
@@ -381,6 +524,19 @@ export const AdminBamPaymentSection: React.FC<AdminBamPaymentSectionProps> = ({
       };
       updatedRecords = [newRecord, ...records];
       setSuccessMsg('✓ Transaksi Biaya Awal Masuk (BAM) berhasil disimpan! Sisa saldo otomatis terhitung.');
+
+      PaymentRepository.create({
+        studentId: selectedStudentId || `std_${Date.now()}`,
+        registrationNumber: regNo,
+        studentName,
+        paymentType: 'bam',
+        amount: Number(amountPaid) || 0,
+        status: remainingBalanceAfterThis <= 0 || installmentType === 'Lunas' ? 'verified' : 'pending',
+        paymentMethod: 'Transfer Bank',
+        bankName: 'BSI',
+        paymentDate,
+        notes: `${installmentType} - Saldo Sisa: Rp ${remainingBalanceAfterThis.toLocaleString('id-ID')}${notes ? ` | ${notes}` : ''}`,
+      }).catch(err => console.warn('PaymentRepository BAM create err:', err));
     }
 
     setRecords(updatedRecords);
@@ -415,11 +571,19 @@ export const AdminBamPaymentSection: React.FC<AdminBamPaymentSectionProps> = ({
       const updated = records.filter(r => r.id !== id);
       setRecords(updated);
       saveBamPayments(updated);
+      PaymentRepository.remove(id).catch(err => console.warn('PaymentRepository BAM remove err:', err));
     }
   };
 
   // Filter records
   const filteredRecords = records.filter(r => {
+    const linkedStudent = students.find(
+      s => s.id === r.studentId ||
+      (s.registrationNumber && s.registrationNumber === r.registrationNumber) ||
+      (s.fullName && s.fullName.toLowerCase() === r.studentName.toLowerCase())
+    );
+    const hasProof = !!(r.proofUrl || linkedStudent?.initialPaymentProofUrl);
+
     const matchesSearch =
       r.studentName.toLowerCase().includes(searchQuery.toLowerCase()) ||
       r.transactionNumber.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -433,13 +597,22 @@ export const AdminBamPaymentSection: React.FC<AdminBamPaymentSectionProps> = ({
         ? r.installmentType === 'Lunas'
         : r.installmentType.startsWith('Cicilan');
 
-    return matchesSearch && matchesGender && matchesType;
+    const matchesProof =
+      filterProof === 'all' ||
+      (filterProof === 'has_proof' && hasProof) ||
+      (filterProof === 'no_proof' && !hasProof);
+
+    return matchesSearch && matchesGender && matchesType && matchesProof;
   });
 
   // Calculate totals
   const totalBamCollected = records.reduce((acc, curr) => acc + curr.amountPaid, 0);
   const totalLunasCount = records.filter(r => r.remainingBalance === 0 || r.installmentType === 'Lunas').length;
   const totalCicilanCount = records.filter(r => r.installmentType.startsWith('Cicilan')).length;
+  const countWithProof = records.filter(r => {
+    const linked = students.find(s => s.id === r.studentId || s.registrationNumber === r.registrationNumber);
+    return !!(r.proofUrl || linked?.initialPaymentProofUrl);
+  }).length;
 
   return (
     <div className="space-y-6">
@@ -783,11 +956,21 @@ export const AdminBamPaymentSection: React.FC<AdminBamPaymentSectionProps> = ({
                         />
                         <button
                           type="button"
-                          onClick={() => setPreviewProofUrl(st.initialPaymentProofUrl || null)}
+                          onClick={() => setActiveProofData({
+                            url: st.initialPaymentProofUrl!,
+                            studentName: st.fullName,
+                            regNo: st.registrationNumber || 'NO-REG',
+                            paymentType: 'bam',
+                            amount: st.initialPaymentAmount || (st.gender === 'Perempuan' ? 6875000 : 6625000),
+                            status: st.initialPaymentStatus || 'pending',
+                            date: st.initialPaymentDate,
+                            notes: st.initialPaymentNotes,
+                            gender: st.gender === 'Perempuan' ? 'Perempuan' : 'Laki-laki',
+                          })}
                           className="absolute inset-0 bg-slate-950/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center text-white text-xs font-bold gap-1 cursor-pointer"
                         >
                           <Eye className="w-4 h-4 text-amber-300" />
-                          <span>Lihat Gambar Penuh</span>
+                          <span>Lihat & Perbesar Gambar</span>
                         </button>
                       </div>
                     )}
@@ -831,6 +1014,38 @@ export const AdminBamPaymentSection: React.FC<AdminBamPaymentSectionProps> = ({
         </div>
 
         <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
+          {/* Proof Filter Buttons */}
+          <div className="flex items-center bg-slate-100 p-1 rounded-lg border border-slate-200">
+            <button
+              type="button"
+              onClick={() => setFilterProof('all')}
+              className={`px-2.5 py-1 rounded-md text-[11px] font-bold transition-colors cursor-pointer ${
+                filterProof === 'all' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              Semua ({records.length})
+            </button>
+            <button
+              type="button"
+              onClick={() => setFilterProof('has_proof')}
+              className={`px-2.5 py-1 rounded-md text-[11px] font-bold transition-colors cursor-pointer flex items-center gap-1 ${
+                filterProof === 'has_proof' ? 'bg-blue-600 text-white shadow-xs' : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              <ImageIcon className="w-3 h-3" />
+              <span>Ada Bukti ({countWithProof})</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setFilterProof('no_proof')}
+              className={`px-2.5 py-1 rounded-md text-[11px] font-bold transition-colors cursor-pointer ${
+                filterProof === 'no_proof' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              Belum Upload ({records.length - countWithProof})
+            </button>
+          </div>
+
           <div className="flex items-center gap-1.5 w-full sm:w-auto">
             <Filter className="w-3.5 h-3.5 text-slate-500 shrink-0" />
             <span className="font-bold text-slate-600 shrink-0">Gender:</span>
@@ -872,7 +1087,7 @@ export const AdminBamPaymentSection: React.FC<AdminBamPaymentSectionProps> = ({
         </div>
 
         <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs border-collapse min-w-[850px]">
+          <table className="w-full text-left text-xs border-collapse min-w-[900px]">
             <thead>
               <tr className="bg-slate-100 border-b font-bold text-slate-700 whitespace-nowrap">
                 <th className="p-3">No</th>
@@ -885,66 +1100,138 @@ export const AdminBamPaymentSection: React.FC<AdminBamPaymentSectionProps> = ({
                 <th className="p-3">Status / Cicilan</th>
                 <th className="p-3">Total Terbayar</th>
                 <th className="p-3">Saldo Sisa Tagihan</th>
+                <th className="p-3 text-center">Bukti Transfer</th>
                 <th className="p-3 text-center">Aksi (Edit Nominal Saja)</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-200 text-slate-800">
               {filteredRecords.length === 0 ? (
                 <tr>
-                  <td colSpan={11} className="p-8 text-center text-slate-400 italic font-medium">
+                  <td colSpan={12} className="p-8 text-center text-slate-400 italic font-medium">
                     Belum ada data transaksi BAM yang sesuai filter.
                   </td>
                 </tr>
               ) : (
-                filteredRecords.map((r, idx) => (
-                  <tr key={r.id} className="hover:bg-slate-50 font-medium whitespace-nowrap">
-                    <td className="p-3 text-slate-500 font-mono">{idx + 1}</td>
-                    <td className="p-3 font-mono font-bold text-blue-700">{r.transactionNumber}</td>
-                    <td className="p-3 text-slate-600">{r.paymentDate}</td>
-                    <td className="p-3 font-bold text-slate-900">{r.studentName}</td>
-                    <td className="p-3">
-                      <span className={`px-2 py-0.5 rounded-md font-bold text-[10px] ${
-                        r.gender === 'Perempuan' ? 'bg-pink-100 text-pink-800' : 'bg-blue-100 text-blue-800'
-                      }`}>
-                        {r.gender}
-                      </span>
-                    </td>
-                    <td className="p-3 text-slate-600 font-semibold">
-                      Rp {r.totalBamCost.toLocaleString('id-ID')}
-                    </td>
-                    <td className="p-3 font-extrabold text-blue-700">
-                      Rp {r.amountPaid.toLocaleString('id-ID')}
-                    </td>
-                    <td className="p-3">
-                      <span className={`px-2.5 py-0.5 rounded-full font-bold text-[10px] ${
-                        r.installmentType === 'Lunas'
-                          ? 'bg-emerald-100 text-emerald-800'
-                          : 'bg-amber-100 text-amber-800 border border-amber-300'
-                      }`}>
-                        {r.installmentType}
-                      </span>
-                    </td>
-                    <td className="p-3 font-bold text-slate-800">
-                      Rp {r.totalPaidToDate.toLocaleString('id-ID')}
-                    </td>
-                    <td className="p-3">
-                      {r.remainingBalance === 0 ? (
-                        <span className="font-extrabold text-emerald-600 flex items-center gap-1">
-                          ✓ LUNAS
+                filteredRecords.map((r, idx) => {
+                  const linkedStudent = students.find(
+                    s => s.id === r.studentId ||
+                    (s.registrationNumber && s.registrationNumber === r.registrationNumber) ||
+                    (s.fullName && s.fullName.toLowerCase() === r.studentName.toLowerCase())
+                  );
+                  const proofUrl = r.proofUrl || linkedStudent?.initialPaymentProofUrl;
+
+                  return (
+                    <tr key={r.id} className="hover:bg-slate-50 font-medium whitespace-nowrap">
+                      <td className="p-3 text-slate-500 font-mono">{idx + 1}</td>
+                      <td className="p-3 font-mono font-bold text-blue-700">{r.transactionNumber}</td>
+                      <td className="p-3 text-slate-600">{r.paymentDate}</td>
+                      <td className="p-3 font-bold text-slate-900">{r.studentName}</td>
+                      <td className="p-3">
+                        <span className={`px-2 py-0.5 rounded-md font-bold text-[10px] ${
+                          r.gender === 'Perempuan' ? 'bg-pink-100 text-pink-800' : 'bg-blue-100 text-blue-800'
+                        }`}>
+                          {r.gender}
                         </span>
-                      ) : (
-                        <span className="font-extrabold text-rose-600 bg-rose-50 px-2 py-0.5 rounded-md border border-rose-200">
-                          Sisa: Rp {r.remainingBalance.toLocaleString('id-ID')}
+                      </td>
+                      <td className="p-3 text-slate-600 font-semibold">
+                        Rp {r.totalBamCost.toLocaleString('id-ID')}
+                      </td>
+                      <td className="p-3 font-extrabold text-blue-700">
+                        Rp {r.amountPaid.toLocaleString('id-ID')}
+                      </td>
+                      <td className="p-3">
+                        <span className={`px-2.5 py-0.5 rounded-full font-bold text-[10px] ${
+                          r.installmentType === 'Lunas'
+                            ? 'bg-emerald-100 text-emerald-800'
+                            : 'bg-amber-100 text-amber-800 border border-amber-300'
+                        }`}>
+                          {r.installmentType}
                         </span>
-                      )}
-                    </td>
-                    <td className="p-3 text-center">
-                      <div className="flex items-center justify-center gap-1.5">
-                        <button
-                          onClick={() => handleOpenQuickNominalModal(r)}
-                          className="px-2.5 py-1 bg-amber-500 hover:bg-amber-400 text-slate-950 font-extrabold rounded-lg text-[11px] flex items-center gap-1 cursor-pointer shadow-sm transition-all"
-                          title="Fitur Edit Nominal Saja untuk Menyesuaikan Jumlah Biaya"
-                        >
+                      </td>
+                      <td className="p-3 font-bold text-slate-800">
+                        Rp {r.totalPaidToDate.toLocaleString('id-ID')}
+                      </td>
+                      <td className="p-3">
+                        {r.remainingBalance === 0 ? (
+                          <span className="font-extrabold text-emerald-600 flex items-center gap-1">
+                            ✓ LUNAS
+                          </span>
+                        ) : (
+                          <span className="font-extrabold text-rose-600 bg-rose-50 px-2 py-0.5 rounded-md border border-rose-200">
+                            Sisa: Rp {r.remainingBalance.toLocaleString('id-ID')}
+                          </span>
+                        )}
+                      </td>
+                      {/* BUKTI TRANSFER BAM COLUMN */}
+                      <td className="p-3 text-center">
+                        {proofUrl ? (
+                          <div className="flex items-center justify-center gap-1.5">
+                            <div
+                              onClick={() => setActiveProofData({
+                                url: proofUrl,
+                                studentName: r.studentName,
+                                regNo: r.registrationNumber || 'SPMB',
+                                paymentType: 'bam',
+                                amount: r.amountPaid,
+                                status: linkedStudent?.initialPaymentStatus || (r.installmentType === 'Lunas' ? 'verified' : 'pending'),
+                                date: r.paymentDate,
+                                notes: r.notes || linkedStudent?.initialPaymentNotes,
+                                gender: r.gender,
+                              })}
+                              className="relative group w-9 h-9 rounded-lg border border-slate-300 overflow-hidden bg-slate-900 cursor-pointer shrink-0 hover:ring-2 hover:ring-blue-500 transition-all shadow-xs"
+                              title="Klik untuk lihat bukti transfer BAM penuh"
+                            >
+                              <img
+                                src={proofUrl}
+                                alt="Bukti BAM"
+                                className="w-full h-full object-cover group-hover:scale-110 transition-transform"
+                                referrerPolicy="no-referrer"
+                              />
+                              <div className="absolute inset-0 bg-slate-950/40 opacity-0 group-hover:opacity-100 flex items-center justify-center text-white transition-opacity">
+                                <Eye className="w-3.5 h-3.5 text-amber-300" />
+                              </div>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => setActiveProofData({
+                                url: proofUrl,
+                                studentName: r.studentName,
+                                regNo: r.registrationNumber || 'SPMB',
+                                paymentType: 'bam',
+                                amount: r.amountPaid,
+                                status: linkedStudent?.initialPaymentStatus || (r.installmentType === 'Lunas' ? 'verified' : 'pending'),
+                                date: r.paymentDate,
+                                notes: r.notes || linkedStudent?.initialPaymentNotes,
+                                gender: r.gender,
+                              })}
+                              className="px-2 py-1 bg-slate-100 hover:bg-blue-50 text-slate-700 hover:text-blue-700 border border-slate-300 hover:border-blue-300 rounded-md font-bold text-[10px] flex items-center gap-1 cursor-pointer transition-colors"
+                              title="Lihat Bukti Transfer BAM"
+                            >
+                              <Eye className="w-3 h-3 text-blue-600" />
+                              <span>Lihat</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => downloadPaymentProof(proofUrl, `Bukti_BAM_${r.registrationNumber || r.studentName}.jpg`)}
+                              className="p-1 text-slate-500 hover:text-slate-900 hover:bg-slate-100 rounded-md transition-colors cursor-pointer"
+                              title="Download Bukti Transfer BAM"
+                            >
+                              <Download className="w-3.5 h-3.5 text-slate-600" />
+                            </button>
+                          </div>
+                        ) : (
+                          <span className="text-[10px] text-slate-400 bg-slate-100 px-2 py-0.5 rounded italic">
+                            Belum Upload
+                          </span>
+                        )}
+                      </td>
+                      <td className="p-3 text-center">
+                        <div className="flex items-center justify-center gap-1.5">
+                          <button
+                            onClick={() => handleOpenQuickNominalModal(r)}
+                            className="px-2.5 py-1 bg-amber-500 hover:bg-amber-400 text-slate-950 font-extrabold rounded-lg text-[11px] flex items-center gap-1 cursor-pointer shadow-sm transition-all"
+                            title="Fitur Edit Nominal Saja untuk Menyesuaikan Jumlah Biaya"
+                          >
                           <DollarSign className="w-3.5 h-3.5 text-slate-950" />
                           <span>Edit Nominal</span>
                         </button>
@@ -965,8 +1252,8 @@ export const AdminBamPaymentSection: React.FC<AdminBamPaymentSectionProps> = ({
                       </div>
                     </td>
                   </tr>
-                ))
-              )}
+                );
+              }))}
             </tbody>
           </table>
         </div>
@@ -1372,47 +1659,29 @@ export const AdminBamPaymentSection: React.FC<AdminBamPaymentSectionProps> = ({
       {/* SQL Modal */}
       {showSqlModal && (
         <PaymentSqlModal
-          students={students}
-          bamRecords={records}
-          formRecords={getStoredFormPayments()}
+          isOpen={showSqlModal}
+          bamPayments={records}
+          formPayments={getStoredFormPayments()}
           onClose={() => setShowSqlModal(false)}
         />
       )}
 
-      {/* PREVIEW IMAGE MODAL FOR ADMIN */}
-      {previewProofUrl && (
-        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl max-w-3xl w-full p-4 shadow-2xl space-y-3">
-            <div className="flex items-center justify-between border-b pb-2">
-              <span className="font-extrabold text-slate-900 text-sm">Pratinjau Foto Bukti Transfer BAM</span>
-              <button
-                type="button"
-                onClick={() => setPreviewProofUrl(null)}
-                className="text-slate-500 hover:text-slate-800 font-bold text-base cursor-pointer"
-              >
-                ✕
-              </button>
-            </div>
-            <div className="max-h-[75vh] overflow-auto bg-slate-900 p-2 rounded-xl flex items-center justify-center">
-              <img
-                src={previewProofUrl}
-                alt="Bukti Transfer Full"
-                className="max-h-[70vh] object-contain rounded"
-                referrerPolicy="no-referrer"
-              />
-            </div>
-            <div className="flex justify-end">
-              <button
-                type="button"
-                onClick={() => setPreviewProofUrl(null)}
-                className="px-4 py-2 bg-slate-800 text-white font-bold text-xs rounded-xl cursor-pointer"
-              >
-                Tutup
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* PAYMENT PROOF MODAL FOR ADMIN */}
+      <PaymentProofModal
+        isOpen={!!activeProofData}
+        onClose={() => setActiveProofData(null)}
+        data={activeProofData}
+        onVerify={activeProofData ? (approved) => {
+          const matchedStudent = students.find(
+            s => s.fullName.toLowerCase() === activeProofData.studentName.toLowerCase() ||
+                 s.registrationNumber === activeProofData.regNo
+          );
+          if (matchedStudent) {
+            handleVerifyStudentBam(matchedStudent.id, approved);
+            setActiveProofData(null);
+          }
+        } : undefined}
+      />
     </div>
   );
 };

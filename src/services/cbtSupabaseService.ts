@@ -134,7 +134,7 @@ export async function deleteKategoriSoalSupabase(id: string, kodeKategori: strin
 // ==========================================
 // 2. BANK SOAL SERVICE
 // ==========================================
-export async function fetchSoalSupabase(): Promise<CbtSoal[]> {
+export async function fetchSoalSupabase(forStudent: boolean = false): Promise<CbtSoal[]> {
   try {
     const { data, error } = await supabase
       .from('soal')
@@ -143,11 +143,20 @@ export async function fetchSoalSupabase(): Promise<CbtSoal[]> {
 
     if (error || !data) {
       console.warn('Supabase fetch soal error:', error?.message);
-      return getCbtSoal();
+      const local = getCbtSoal();
+      if (forStudent) {
+        return local.map((s) => ({
+          ...s,
+          jawabanBenar: undefined as any,
+          correctOptionIndex: undefined as any,
+        }));
+      }
+      return local;
     }
 
     const result: CbtSoal[] = data.map(item => {
-      const idx = LETTER_TO_INDEX[item.jawaban_benar?.toUpperCase()] ?? 0;
+      // Siswa tidak menerima kunci jawaban pada response soal
+      const idx = forStudent ? undefined : (LETTER_TO_INDEX[item.jawaban_benar?.toUpperCase()] ?? 0);
       return {
         id: item.id,
         category: item.kategori_kode,
@@ -159,8 +168,8 @@ export async function fetchSoalSupabase(): Promise<CbtSoal[]> {
         pilihanB: item.pilihan_b,
         pilihanC: item.pilihan_c,
         pilihanD: item.pilihan_d,
-        jawabanBenar: idx,
-        correctOptionIndex: idx,
+        jawabanBenar: idx as any,
+        correctOptionIndex: idx as any,
         bobot: Number(item.bobot || 10),
         points: Number(item.bobot || 10),
         levelKesulitan: (item.level_kesulitan || 'medium') as 'easy' | 'medium' | 'hard',
@@ -168,7 +177,9 @@ export async function fetchSoalSupabase(): Promise<CbtSoal[]> {
       };
     });
 
-    saveCbtSoal(result);
+    if (!forStudent) {
+      saveCbtSoal(result);
+    }
     return result;
   } catch (err) {
     console.warn('Error fetching soal from Supabase:', err);
@@ -496,12 +507,25 @@ export async function saveJawabanPesertaSupabase(params: {
   const { ujianId, pesertaId, soalId, jawabanIndex, isRaguRagu } = params;
   const letterJawaban = jawabanIndex !== undefined ? INDEX_TO_LETTER_MAP[jawabanIndex] || 'A' : null;
 
+  // Try Server-side RPC first
+  try {
+    const { error: rpcErr } = await supabase.rpc('rpc_submit_cbt_answer', {
+      p_ujian_id: ujianId,
+      p_soal_id: soalId,
+      p_jawaban: letterJawaban,
+      p_is_ragu: Boolean(isRaguRagu),
+    });
+    if (!rpcErr) return true;
+  } catch {
+    // proceed to direct upsert fallback
+  }
+
   const payload = {
     ujian_id: ujianId,
     peserta_id: pesertaId,
     soal_id: soalId,
-    jawaban: letterJawaban,
-    ragu_ragu: Boolean(isRaguRagu),
+    jawaban_dipilih: letterJawaban,
+    is_ragu: Boolean(isRaguRagu),
     updated_at: new Date().toISOString(),
   };
 
@@ -511,13 +535,38 @@ export async function saveJawabanPesertaSupabase(params: {
       .upsert(payload, { onConflict: 'ujian_id,peserta_id,soal_id' });
 
     if (error) {
-      // If composite key is different, fallback to standard upsert
-      await supabase.from('jawaban_peserta').upsert(payload);
+      // If schema uses legacy column names, try alternative
+      await supabase.from('jawaban_peserta').upsert({
+        ...payload,
+        jawaban: letterJawaban,
+        ragu_ragu: Boolean(isRaguRagu),
+      });
     }
     return true;
   } catch (err: any) {
     console.warn('saveJawabanPesertaSupabase warning:', err?.message);
     return false;
+  }
+}
+
+export async function finishCbtExamServerRpc(ujianId: string): Promise<{
+  success: boolean;
+  final_score?: number;
+  status_kelulusan?: string;
+  error?: string;
+}> {
+  try {
+    const { data, error } = await supabase.rpc('rpc_finish_cbt_exam', {
+      p_ujian_id: ujianId,
+    });
+    if (error) {
+      console.warn('rpc_finish_cbt_exam error:', error.message);
+      return { success: false, error: error.message };
+    }
+    return data || { success: true };
+  } catch (err: any) {
+    console.warn('rpc_finish_cbt_exam call failed:', err?.message);
+    return { success: false, error: err?.message };
   }
 }
 
@@ -593,7 +642,6 @@ export async function saveHasilUjianSupabase(hasil: CbtHasilUjian): Promise<bool
       general_score: hasil.nilaiTpu,
       religious_score: hasil.nilaiDiniyyah,
       final_score: hasil.nilaiTotal,
-      test_submitted: true,
       status: 'test_completed',
     }).eq('id', hasil.pesertaId);
   } catch (err) {

@@ -4,7 +4,6 @@ import {
   CostBreakdown, SchoolInfo, TestSchedule, GasConfig, WebsiteConfig
 } from './types';
 import {
-  getStoredStudents, saveStudents,
   getStoredClassQuotas, saveClassQuotas,
   getStoredCostBreakdown, saveCostBreakdown,
   getStoredSchoolInfo, saveSchoolInfo,
@@ -16,6 +15,7 @@ import {
   safeGetItem, safeSetItem, safeRemoveItem
 } from './utils/storage';
 import { supabase, signOutWithSupabase, getAuthUserProfile } from './utils/supabaseClient';
+import { StudentRepository } from './repositories/StudentRepository';
 
 import { Navbar } from './components/Navbar';
 import { Footer } from './components/Footer';
@@ -25,6 +25,7 @@ import { SidebarLayout } from './components/SidebarLayout';
 import { StudentDashboard } from './components/StudentDashboard';
 import { AdminDashboard } from './components/AdminDashboard';
 import { KepsekDashboard } from './components/KepsekDashboard';
+import { Lock } from 'lucide-react';
 
 export default function App() {
   // App State
@@ -41,7 +42,10 @@ export default function App() {
     return saved && ['student', 'admin', 'kepsek', 'super_admin'].includes(saved) ? saved : 'student';
   });
 
-  const [students, setStudents] = useState<StudentData[]>(() => getStoredStudents());
+  // Students SSOT is Supabase: initialized as empty array [] and populated via StudentRepository
+  const [students, setStudents] = useState<StudentData[]>([]);
+  const [isDataLoading, setIsDataLoading] = useState<boolean>(true);
+
   const [classQuotas, setClassQuotas] = useState<ClassQuota[]>(() => getStoredClassQuotas());
   const [costBreakdowns, setCostBreakdowns] = useState<CostBreakdown[]>(() => getStoredCostBreakdown());
   const [schoolInfo, setSchoolInfo] = useState<SchoolInfo>(() => getStoredSchoolInfo());
@@ -62,28 +66,84 @@ export default function App() {
     return activeRoleView === 'student' ? 'timeline' : 'overview';
   });
 
-  const handleRefreshAllData = () => {
-    setStudents(getStoredStudents());
-    setClassQuotas(getStoredClassQuotas());
-    setCostBreakdowns(getStoredCostBreakdown());
-    setSchoolInfo(getStoredSchoolInfo());
-    setTestSchedules(getStoredTestSchedules());
-    setGasConfig(getStoredGasConfig());
-    setWebsiteConfig(getStoredWebsiteConfig());
+  // Refresh All Data strictly from Supabase Server
+  const handleRefreshAllData = async () => {
+    setIsDataLoading(true);
+    try {
+      const { data: studentList, error: studentErr } = await StudentRepository.list();
+      if (!studentErr && studentList !== null) {
+        setStudents(studentList);
+      } else {
+        setStudents([]);
+      }
+
+      const configData = await loadDataFromSupabase();
+      if (configData.classQuotas) setClassQuotas(configData.classQuotas);
+      if (configData.schoolInfo) setSchoolInfo(configData.schoolInfo);
+      if (configData.costBreakdown) setCostBreakdowns(configData.costBreakdown);
+      if (configData.testSchedules) setTestSchedules(configData.testSchedules);
+      if (configData.gasConfig) setGasConfig(configData.gasConfig);
+      if (configData.websiteConfig) setWebsiteConfig(configData.websiteConfig);
+    } catch (err) {
+      console.warn('Refresh data failed:', err);
+    } finally {
+      setIsDataLoading(false);
+    }
   };
 
-  // Persistence Sync Effects
-  const handleUpdateStudents = (updated: StudentData[]) => {
-    setStudents(updated);
-    saveStudents(updated);
+  // Student CRUD operations strictly routed through StudentRepository per record
+  const handleUpdateStudents = async (updatedList: StudentData[]) => {
+    // 1. Detect and execute deletions
+    const deleted = students.filter(s => !updatedList.some(u => u.id === s.id));
+    for (const d of deleted) {
+      await StudentRepository.remove(d.id);
+    }
+
+    // 2. Process changes per record (insert for new, update with eq(id) for existing)
+    const processed = await Promise.all(
+      updatedList.map(async (item) => {
+        const existing = students.find(o => o.id === item.id);
+        if (!existing) {
+          // INSERT ONLY
+          const res = await StudentRepository.create(item);
+          return res.data || item;
+        } else if (JSON.stringify(existing) !== JSON.stringify(item)) {
+          // UPDATE WITH eq(id) and optimistic concurrency control
+          const res = await StudentRepository.update(item.id, item, existing.version);
+          if (res.conflict || res.error) {
+            console.error('Pembaruan data siswa ditolak:', res.error);
+            return existing; // Tetap pakai versi server
+          }
+          return res.data || item;
+        }
+        return item;
+      })
+    );
+
+    setStudents(processed);
   };
 
-  const handleUpdateStudentSingle = (updated: StudentData) => {
-    const list = students.map(s => (s.id === updated.id ? updated : s));
-    const exists = list.some(s => s.id === updated.id);
-    const newList = exists ? list : [...list, updated];
-    setStudents(newList);
-    saveStudents(newList);
+  const handleUpdateStudentSingle = async (updated: StudentData) => {
+    const existing = students.find(s => s.id === updated.id);
+    if (!existing) {
+      // INSERT ONLY for new record
+      const res = await StudentRepository.create(updated);
+      if (res.data) {
+        setStudents(prev => [res.data!, ...prev]);
+        return res.data;
+      } else {
+        throw res.error || new Error('Gagal membuat pendaftaran siswa baru di server');
+      }
+    } else {
+      // UPDATE WITH eq(id) - OCC version check
+      const res = await StudentRepository.update(updated.id, updated, existing.version);
+      if (res.data) {
+        setStudents(prev => prev.map(s => (s.id === updated.id ? res.data! : s)));
+        return res.data;
+      } else {
+        throw res.error || new Error('Data siswa telah diperbarui oleh pengguna lain atau sudah dihapus.');
+      }
+    }
   };
 
   const handleUpdateQuotas = (updated: ClassQuota[]) => {
@@ -148,29 +208,52 @@ export default function App() {
     safeSetItem('alhadiid_spmb_view_mode', 'home');
   };
 
-  // Load initial data from Supabase if available & listen to Supabase Auth state changes
+  // Load initial data from Supabase & listen to Supabase Auth state changes
   useEffect(() => {
-    loadDataFromSupabase().then((data) => {
-      if (data.students && data.students.length > 0) setStudents(data.students);
-      if (data.classQuotas && data.classQuotas.length > 0) setClassQuotas(data.classQuotas);
-      if (data.schoolInfo) setSchoolInfo(data.schoolInfo);
-      if (data.costBreakdown && data.costBreakdown.length > 0) setCostBreakdowns(data.costBreakdown);
-      if (data.testSchedules && data.testSchedules.length > 0) setTestSchedules(data.testSchedules);
-      if (data.gasConfig) setGasConfig(data.gasConfig);
-      if (data.websiteConfig) setWebsiteConfig(data.websiteConfig);
-    }).catch((err) => {
-      console.warn('Initial Supabase sync check:', err);
-    });
+    let isMounted = true;
+
+    async function loadData() {
+      setIsDataLoading(true);
+      try {
+        // Fetch Students strictly via StudentRepository (accept [] as valid success)
+        const { data: studentList, error: studentErr } = await StudentRepository.list();
+        if (isMounted) {
+          if (!studentErr && studentList !== null) {
+            setStudents(studentList);
+          } else {
+            console.warn('Student fetch returned error or empty:', studentErr);
+            setStudents([]);
+          }
+        }
+
+        // Fetch configurations from Supabase
+        const configData = await loadDataFromSupabase();
+        if (isMounted) {
+          if (configData.classQuotas) setClassQuotas(configData.classQuotas);
+          if (configData.schoolInfo) setSchoolInfo(configData.schoolInfo);
+          if (configData.costBreakdown) setCostBreakdowns(configData.costBreakdown);
+          if (configData.testSchedules) setTestSchedules(configData.testSchedules);
+          if (configData.gasConfig) setGasConfig(configData.gasConfig);
+          if (configData.websiteConfig) setWebsiteConfig(configData.websiteConfig);
+        }
+      } catch (err) {
+        console.warn('Initial Supabase sync check:', err);
+        if (isMounted) setStudents([]);
+      } finally {
+        if (isMounted) setIsDataLoading(false);
+      }
+    }
+
+    loadData();
 
     // Supabase Auth listener
     const { data: authListener } = supabase.auth.onAuthStateChange(async (event, session) => {
       try {
         const localUser = getCurrentUser();
-        // If we already have a valid local session, DO NOT overwrite it automatically with a different Supabase Auth email
         if (localUser) {
           if (session?.user && localUser.email.toLowerCase() === session.user.email?.toLowerCase()) {
             const userProfile = await getAuthUserProfile(session.user.id, session.user.email);
-            if (userProfile) {
+            if (userProfile && isMounted) {
               setCurrentUserLocal(userProfile);
               setCurrentUser(userProfile);
             }
@@ -180,7 +263,7 @@ export default function App() {
 
         if (session?.user) {
           const userProfile = await getAuthUserProfile(session.user.id, session.user.email);
-          if (userProfile) {
+          if (userProfile && isMounted) {
             setCurrentUserLocal(userProfile);
             setCurrentUser(userProfile);
           }
@@ -191,6 +274,7 @@ export default function App() {
     });
 
     return () => {
+      isMounted = false;
       authListener?.subscription?.unsubscribe();
     };
   }, []);
@@ -230,38 +314,38 @@ export default function App() {
     window.open(`https://wa.me/${schoolInfo.whatsapp}?text=Assalamu%27alaikum%20Panitia%20SPMB%20SMP%20Al-Hadiid%20Cileungsi,%20saya%20ingin%20bertanya%20mengenai%20pendaftaran.`, '_blank');
   };
 
-  // Find or create current student record for logged-in user
+  // Find or create current student record for logged-in user (no demo mock records)
   const currentStudentData: StudentData = React.useMemo(() => {
     if (!currentUser) {
-      // Default fallback student data
-      return students[0] || {
-        id: 'std_demo',
-        registrationNumber: 'SPMB20270001',
+      return {
+        id: '',
+        registrationNumber: '',
         status: 'draft',
-        userEmail: 'calon@gmail.com',
+        userEmail: '',
         createdAt: new Date().toISOString(),
-        fullName: 'Calon Murid Demo',
-        phone: '081234567890',
-        formPaymentAmount: 200000,
+        fullName: '',
+        phone: '',
+        formPaymentAmount: schoolInfo.formFee || 200000,
         formPaymentStatus: 'unpaid',
         nik: '',
         birthPlace: 'Bogor',
         birthDate: '2013-01-01',
         gender: 'Laki-laki',
         religion: 'Islam',
-        address: 'Cileungsi, Bogor',
-        subdistrict: 'Cileungsi',
+        address: '',
+        subdistrict: '',
         city: 'Kabupaten Bogor',
         province: 'Jawa Barat',
-        previousSchoolName: 'SDN Cileungsi',
-        fatherName: 'Ayah Demo',
-        fatherPhone: '081234567890',
-        motherName: 'Ibu Demo',
-        motherJob: 'Ibu Rumah Tangga',
-        motherPhone: '081234567890',
-        fatherEducation: 'S1',
+        previousSchoolName: '',
+        fatherName: '',
+        fatherPhone: '',
+        motherName: '',
+        motherJob: '',
+        motherPhone: '',
+        fatherEducation: '',
         initialPaymentStatus: 'unpaid',
         initialPaymentAmount: 8500000,
+        version: 1,
       };
     }
 
@@ -269,37 +353,49 @@ export default function App() {
     const found = students.find(s => (s.userEmail && userEmailClean && s.userEmail.toLowerCase() === userEmailClean) || (s.id && s.id === currentUser.id));
     if (found) return found;
 
-    // Create initial record
     return {
-      id: currentUser.id || `usr_${Date.now()}`,
+      id: currentUser.id,
       registrationNumber: currentUser.registrationNumber || `SPMB2027${Math.floor(1000 + Math.random() * 9000)}`,
       status: 'draft',
-      userEmail: currentUser.email || 'calon@gmail.com',
+      userEmail: currentUser.email || '',
       createdAt: currentUser.createdAt || new Date().toISOString(),
-      fullName: currentUser.name || 'Calon Murid',
-      phone: currentUser.phone || '081234567890',
-      formPaymentAmount: schoolInfo.formFee,
+      fullName: currentUser.name || '',
+      phone: currentUser.phone || '',
+      formPaymentAmount: schoolInfo.formFee || 200000,
       formPaymentStatus: 'unpaid',
       nik: '',
       birthPlace: 'Bogor',
       birthDate: '2013-01-01',
       gender: 'Laki-laki',
       religion: 'Islam',
-      address: 'Cileungsi, Bogor',
-      subdistrict: 'Cileungsi',
+      address: '',
+      subdistrict: '',
       city: 'Kabupaten Bogor',
       province: 'Jawa Barat',
       previousSchoolName: '',
       fatherName: '',
-      fatherPhone: currentUser.phone || '081234567890',
+      fatherPhone: currentUser.phone || '',
       motherName: '',
-      motherJob: 'Ibu Rumah Tangga',
-      motherPhone: currentUser.phone || '081234567890',
-      fatherEducation: 'S1',
+      motherJob: '',
+      motherPhone: currentUser.phone || '',
+      fatherEducation: '',
       initialPaymentStatus: 'unpaid',
       initialPaymentAmount: 8500000,
+      version: 1,
     };
   }, [currentUser, students, schoolInfo.formFee]);
+
+  if (isDataLoading) {
+    return (
+      <div className="min-h-screen bg-slate-900 text-slate-100 flex flex-col items-center justify-center p-6 space-y-4">
+        <div className="w-12 h-12 border-4 border-emerald-500 border-t-transparent rounded-full animate-spin" />
+        <div className="text-center space-y-1">
+          <h2 className="text-lg font-bold text-white">Memuat Sistem SPMB</h2>
+          <p className="text-xs text-slate-400">Sinkronisasi data relasional Supabase...</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-800">
@@ -342,6 +438,32 @@ export default function App() {
           {/* Landing Page Footer */}
           <Footer schoolInfo={schoolInfo} onOpenWhatsApp={handleOpenWhatsApp} />
         </div>
+      ) : !currentUser ? (
+        <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center p-6 text-center text-white">
+          <div className="max-w-md bg-slate-900 border border-slate-800 rounded-3xl p-8 shadow-2xl space-y-5">
+            <div className="w-16 h-16 bg-blue-500/10 border border-blue-500/20 text-blue-400 rounded-2xl flex items-center justify-center mx-auto">
+              <Lock className="w-8 h-8" />
+            </div>
+            <h2 className="text-2xl font-black text-white">Otentikasi Diperlukan</h2>
+            <p className="text-sm text-slate-400 leading-relaxed">
+              Anda harus masuk menggunakan akun terdaftar untuk mengakses Dashboard SPMB SMP Al-Hadiid Cileungsi.
+            </p>
+            <div className="flex flex-col sm:flex-row gap-3 pt-2">
+              <button
+                onClick={() => { setAuthMode('login'); setAuthModalOpen(true); }}
+                className="flex-1 px-5 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 font-bold text-sm transition-all"
+              >
+                Masuk / Login
+              </button>
+              <button
+                onClick={handleNavigateHome}
+                className="flex-1 px-5 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-sm transition-all"
+              >
+                Halaman Utama
+              </button>
+            </div>
+          </div>
+        </div>
       ) : (
         /* Dashboard Mode with Left Sidebar Navigation Layout */
         <SidebarLayout
@@ -358,7 +480,7 @@ export default function App() {
         >
           {activeRoleView === 'student' && (
             <StudentDashboard
-              currentUser={currentUser || { id: 'guest', name: 'Calon Murid', email: 'calon@gmail.com', phone: '081234567890', role: 'student', createdAt: '' }}
+              currentUser={currentUser}
               studentData={currentStudentData}
               schoolInfo={schoolInfo}
               costBreakdowns={costBreakdowns}
@@ -371,11 +493,7 @@ export default function App() {
 
           {(activeRoleView === 'admin' || activeRoleView === 'super_admin') && (
             <AdminDashboard
-              currentUser={currentUser || (
-                activeRoleView === 'super_admin'
-                  ? { id: 'usr_superadmin', name: 'Super Admin SPMB', email: 'superadmin@alhadiid.sch.id', phone: '081234567899', role: 'super_admin', createdAt: '' }
-                  : { id: 'admin', name: 'Panitia SPMB', email: 'admin@alhadiid.sch.id', phone: '081234567890', role: 'admin', createdAt: '' }
-              )}
+              currentUser={currentUser}
               students={students}
               classQuotas={classQuotas}
               costBreakdowns={costBreakdowns}
@@ -397,7 +515,7 @@ export default function App() {
 
           {activeRoleView === 'kepsek' && (
             <KepsekDashboard
-              currentUser={currentUser || { id: 'kepsek', name: 'Dr. H. Ahmad Dahlan, M.Pd.', email: 'kepsek@alhadiid.sch.id', phone: '081234567890', role: 'kepsek', createdAt: '' }}
+              currentUser={currentUser}
               students={students}
               classQuotas={classQuotas}
               schoolInfo={schoolInfo}

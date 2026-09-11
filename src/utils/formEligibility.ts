@@ -50,12 +50,26 @@ export function hasUploadedPaymentProof(student: StudentData | null | undefined)
 }
 
 /**
+ * Memeriksa apakah pembayaran formulir calon murid sudah diverifikasi oleh Panitia Admin.
+ */
+export function isStudentPaymentVerified(student: StudentData | null | undefined): boolean {
+  if (!student) return false;
+  return Boolean(
+    student.formPaymentStatus === 'verified' ||
+    student.isFormVerified === true ||
+    student.isFormVerifiedByAdmin === true
+  );
+}
+
+/**
  * Memeriksa apakah fitur Download Formulir aktif untuk calon murid ini:
- * "jika calon murid sudah mengisi data formulir dan melakukan upload bukti transfer
- *  maka akan muncul fitur download formulir pada dashboard admin panitia"
+ * Fitur download formulir aktif setelah data pembayaran diverifikasi oleh Panitia Admin,
+ * atau jika calon murid telah mengisi data formulir dan mengunggah bukti transfer.
  */
 export function canDownloadStudentForm(student: StudentData | null | undefined): boolean {
   if (!student) return false;
+  // Jika pembayaran sudah diverifikasi oleh admin, otomatis fitur download formulir terbuka
+  if (isStudentPaymentVerified(student)) return true;
   return isStudentFormFilled(student) && hasUploadedPaymentProof(student);
 }
 

@@ -39,6 +39,8 @@ import { AdminPaymentHistorySection } from './payment/AdminPaymentHistorySection
 import { UserManagementSection } from './UserManagementSection';
 import { AccountSettingsSection } from './AccountSettingsSection';
 import { FilledClassesSection } from './FilledClassesSection';
+import { PaymentRepository } from '../repositories/PaymentRepository';
+import { StudentRepository } from '../repositories/StudentRepository';
 
 
 interface AdminDashboardProps {
@@ -391,40 +393,68 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     return matchSearch && matchStatus;
   });
 
-  // Action: Verify Form Payment (Tahap 3)
+  // Action: Verify Form Payment (Tahap 3) & Unlock Form Download
   const handleVerifyFormPayment = (studentId: string, status: 'verified' | 'rejected') => {
+    const targetStudent = students.find(s => s.id === studentId);
+    if (!targetStudent) return;
+    const isVerified = status === 'verified';
+
     const updated = students.map(s => {
       if (s.id === studentId) {
         return {
           ...s,
           formPaymentStatus: status,
-          status: status === 'verified' ? ('filling_form' as const) : ('pending_payment' as const),
+          isFormVerified: isVerified,
+          isFormVerifiedByAdmin: isVerified,
+          status: isVerified
+            ? (s.status === 'draft' || s.status === 'pending_payment' || s.status === 'verifying_payment' ? ('filling_form' as const) : s.status)
+            : ('pending_payment' as const),
         };
       }
       return s;
     });
     onUpdateStudents(updated);
+
+    // Sync to Supabase payments table
+    PaymentRepository.create({
+      studentId: targetStudent.id,
+      registrationNumber: targetStudent.registrationNumber || `SPMB${Date.now().toString().slice(-8)}`,
+      studentName: targetStudent.fullName,
+      paymentType: 'form',
+      amount: targetStudent.formPaymentAmount || 200000,
+      status: status,
+      paymentMethod: 'Transfer Bank',
+      bankName: 'BSI',
+      paymentDate: targetStudent.formPaymentDate || new Date().toISOString().split('T')[0],
+      proofUrl: targetStudent.formPaymentProofUrl,
+      notes: isVerified ? 'Verifikasi Pembayaran Formulir oleh Panitia Admin' : 'Pembayaran Formulir Ditolak',
+    }).catch(err => console.warn('PaymentRepository form verify sync error:', err));
+
+    // Update student row in Supabase
+    StudentRepository.update(targetStudent.id, {
+      formPaymentStatus: status,
+    }).catch(err => console.warn('StudentRepository update error:', err));
+
+    // Also update selectedStudent modal state if currently open
+    if (selectedStudent && selectedStudent.id === studentId) {
+      setSelectedStudent(prev => prev ? {
+        ...prev,
+        formPaymentStatus: status,
+        isFormVerified: isVerified,
+        isFormVerifiedByAdmin: isVerified,
+      } : null);
+    }
+
+    alert(
+      isVerified
+        ? `✓ Pembayaran Formulir untuk ${targetStudent.fullName} Berhasil Diverifikasi Lunas!\n\nFitur Download Formulir (PDF 3 Halaman) pada dashboard calon murid telah DIAKTIFKAN.`
+        : `Status pembayaran formulir untuk ${targetStudent.fullName} diubah menjadi Ditolak.`
+    );
   };
 
   // Action: Verify Payment + Form Data (Activates PDF Download & Verification)
   const handleVerifyFormAndData = (studentId: string, isVerified: boolean) => {
-    const updated = students.map(s => {
-      if (s.id === studentId) {
-        return {
-          ...s,
-          isFormVerified: isVerified,
-          formPaymentStatus: isVerified ? ('verified' as const) : ('pending' as const),
-          status: isVerified ? ('form_verified' as const) : ('form_submitted' as const),
-        };
-      }
-      return s;
-    });
-    onUpdateStudents(updated);
-    alert(
-      isVerified
-        ? '✓ Berhasil Memverifikasi Data Pembayaran & Isian Formulir!\n\nFitur Download Formulir PDF pada dashboard calon murid telah DIAKTIFKAN.'
-        : 'Status verifikasi dibatalkan.'
-    );
+    handleVerifyFormPayment(studentId, isVerified ? 'verified' : 'rejected');
   };
 
   // Action: Toggle Active Test Schedule for Candidate
@@ -481,7 +511,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
   const handleEditQuestion = (q: ExamQuestion) => {
     setEditingQuestionId(q.id);
-    setQCategory(q.category);
+    setQCategory(q.category as any);
     setQText(q.questionText);
     setQOptA(q.options[0] || '');
     setQOptB(q.options[1] || '');
@@ -777,7 +807,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           assignedClassId: targetQuota.id,
           assignedClassName: targetQuota.className,
           assignedHomeroomTeacher: targetQuota.homeroomTeacher,
-          firstDayDate: '12 Juli 2027',
+          firstDayDate: '2027-07-12',
           mplsInfo: 'Hadir Pukul 07:00 WIB memakai seragam SD asal.',
           status: 'class_assigned' as const,
         };
@@ -1351,14 +1381,31 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                       <td className="p-3 font-semibold text-blue-700">{s.assignedClassName || '-'}</td>
                       <td className="p-3 text-center">
                         <div className="flex items-center justify-center gap-1.5 flex-wrap">
+                          {s.formPaymentStatus !== 'verified' ? (
+                            <button
+                              type="button"
+                              onClick={() => handleVerifyFormPayment(s.id, 'verified')}
+                              className="px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-[10px] font-bold shadow-sm transition-all flex items-center gap-1 cursor-pointer"
+                              title="Verifikasi Pembayaran Formulir (Buka Akses Download Formulir Murid)"
+                            >
+                              <CheckCircle2 className="w-3 h-3 text-emerald-100" />
+                              <span>Verifikasi Bayar</span>
+                            </button>
+                          ) : (
+                            <span className="px-2 py-1 bg-emerald-100 text-emerald-800 rounded-lg text-[10px] font-bold flex items-center gap-1">
+                              <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                              <span>Lunas</span>
+                            </span>
+                          )}
+
                           {canDownloadStudentForm(s) && (
                             <button
                               type="button"
                               onClick={() => handleDownloadStudentForm(s)}
-                              className="px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-[10px] font-bold shadow-sm transition-all flex items-center gap-1 cursor-pointer animate-in fade-in"
+                              className="px-2.5 py-1.5 bg-teal-700 hover:bg-teal-600 text-white rounded-lg text-[10px] font-bold shadow-sm transition-all flex items-center gap-1 cursor-pointer animate-in fade-in"
                               title="Download Formulir Pendaftaran Lengkap (PDF 3 Halaman)"
                             >
-                              <Download className="w-3 h-3 text-emerald-100" />
+                              <Download className="w-3 h-3 text-teal-100" />
                               <span>Download Formulir</span>
                             </button>
                           )}
@@ -1403,7 +1450,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
         {/* TAB 3C: RIWAYAT PEMBAYARAN TERPISAH (LAKI-LAKI & PEREMPUAN) */}
         {activeTab === 'payment_history' && (
-          <AdminPaymentHistorySection />
+          <AdminPaymentHistorySection
+            students={students}
+            onUpdateStudents={onUpdateStudents}
+          />
         )}
 
 
@@ -3693,6 +3743,55 @@ Kunci: B`}
                   </div>
                 </div>
 
+                {/* FITUR VERIFIKASI PEMBAYARAN FORMULIR */}
+                <div className={`p-4 rounded-2xl border space-y-3 ${
+                  selectedStudent.formPaymentStatus === 'verified'
+                    ? 'bg-emerald-50/70 border-emerald-300'
+                    : 'bg-amber-50/80 border-amber-300'
+                }`}>
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2 text-xs font-bold text-slate-900">
+                      <CreditCard className="w-4 h-4 text-emerald-600" />
+                      <span>Verifikasi Pembayaran Formulir (Rp {(selectedStudent.formPaymentAmount || 200000).toLocaleString('id-ID')})</span>
+                    </div>
+                    <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${
+                      selectedStudent.formPaymentStatus === 'verified'
+                        ? 'bg-emerald-600 text-white'
+                        : 'bg-amber-500 text-white'
+                    }`}>
+                      {selectedStudent.formPaymentStatus === 'verified' ? '✓ Lunas Terverifikasi' : 'Belum Terverifikasi'}
+                    </span>
+                  </div>
+
+                  <p className="text-xs text-slate-700 leading-relaxed">
+                    {selectedStudent.formPaymentStatus === 'verified'
+                      ? 'Status pembayaran formulir telah diverifikasi oleh Panitia Admin. Fitur Download Formulir PDF pada dashboard calon murid telah DIAKTIFKAN dan dapat diunduh langsung.'
+                      : 'Verifikasi pembayaran calon murid ini untuk mengaktifkan dan membuka akses fitur Download Formulir Pendaftaran PDF di akun calon murid.'}
+                  </p>
+
+                  <div className="flex items-center gap-2 pt-1">
+                    {selectedStudent.formPaymentStatus !== 'verified' ? (
+                      <button
+                        type="button"
+                        onClick={() => handleVerifyFormPayment(selectedStudent.id, 'verified')}
+                        className="flex-1 py-2.5 px-4 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs rounded-xl shadow transition-all flex items-center justify-center gap-2 cursor-pointer"
+                      >
+                        <CheckCircle2 className="w-4 h-4" />
+                        <span>Verifikasi Pembayaran & Aktifkan Download Formulir</span>
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => handleVerifyFormPayment(selectedStudent.id, 'rejected')}
+                        className="py-2 px-3 bg-white border border-slate-300 hover:bg-rose-50 hover:text-rose-700 hover:border-rose-300 text-slate-700 font-bold text-xs rounded-xl transition-all flex items-center gap-1.5 cursor-pointer"
+                      >
+                        <XCircle className="w-3.5 h-3.5 text-rose-500" />
+                        <span>Batalkan Verifikasi</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
+
                 {/* SYARAT & FITUR DOWNLOAD FORMULIR */}
                 {canDownload ? (
                   <div className="p-4 bg-gradient-to-br from-emerald-50 to-teal-50 border-2 border-emerald-500/40 rounded-2xl shadow-sm space-y-3">
@@ -3807,7 +3906,7 @@ Kunci: B`}
                   )}
                 </div>
 
-                {/* Bukti Transfer Box jika sudah upload */}
+                {/* Bukti Transfer Formulir Box jika sudah upload */}
                 {selectedStudent.formPaymentProofUrl && (
                   <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-xl space-y-2">
                     <div className="flex items-center justify-between text-xs">
@@ -3820,12 +3919,23 @@ Kunci: B`}
                       </span>
                     </div>
                     <div className="flex items-center gap-3">
-                      <img
-                        src={selectedStudent.formPaymentProofUrl}
-                        alt="Bukti Transfer Formulir"
-                        className="w-20 h-20 object-contain bg-white rounded-lg border border-slate-300 p-1"
-                        referrerPolicy="no-referrer"
-                      />
+                      <a
+                        href={selectedStudent.formPaymentProofUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="group relative block w-20 h-20 rounded-lg border border-slate-300 overflow-hidden bg-slate-900 shrink-0"
+                        title="Klik untuk membuka gambar ukuran penuh"
+                      >
+                        <img
+                          src={selectedStudent.formPaymentProofUrl}
+                          alt="Bukti Transfer Formulir"
+                          className="w-full h-full object-contain group-hover:scale-105 transition-transform"
+                          referrerPolicy="no-referrer"
+                        />
+                        <div className="absolute inset-0 bg-slate-950/40 opacity-0 group-hover:opacity-100 flex items-center justify-center text-white transition-opacity">
+                          <Eye className="w-4 h-4 text-amber-300" />
+                        </div>
+                      </a>
                       <div className="text-xs text-slate-600 space-y-1">
                         <div><span className="font-semibold">Tanggal Upload:</span> {selectedStudent.formPaymentDate || '-'}</div>
                         <div>
@@ -3835,6 +3945,75 @@ Kunci: B`}
                         {selectedStudent.formPaymentNotes && (
                           <div className="text-slate-500 italic">"{selectedStudent.formPaymentNotes}"</div>
                         )}
+                        <div className="pt-2 flex items-center gap-2">
+                          {selectedStudent.formPaymentStatus !== 'verified' ? (
+                            <button
+                              type="button"
+                              onClick={() => handleVerifyFormPayment(selectedStudent.id, 'verified')}
+                              className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-[11px] rounded-lg shadow-sm transition-all flex items-center gap-1 cursor-pointer"
+                            >
+                              <CheckCircle2 className="w-3.5 h-3.5" />
+                              <span>Verifikasi Bukti Pembayaran</span>
+                            </button>
+                          ) : (
+                            <span className="px-2.5 py-1 bg-emerald-100 text-emerald-800 rounded-lg text-[10px] font-bold flex items-center gap-1">
+                              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                              <span>Lunas & Terverifikasi</span>
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Bukti Transfer BAM Box jika sudah upload */}
+                {selectedStudent.initialPaymentProofUrl && (
+                  <div className="p-3.5 bg-blue-50/60 border border-blue-200 rounded-xl space-y-2">
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="font-bold text-slate-800 flex items-center gap-1.5">
+                        <CreditCard className="w-4 h-4 text-blue-600" />
+                        Bukti Transfer Biaya Awal Masuk (BAM)
+                      </span>
+                      <span className="font-mono font-bold text-blue-700">
+                        Rp {(selectedStudent.initialPaymentAmount || (selectedStudent.gender === 'Perempuan' ? 6875000 : 6625000)).toLocaleString('id-ID')}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <a
+                        href={selectedStudent.initialPaymentProofUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="group relative block w-20 h-20 rounded-lg border border-blue-300 overflow-hidden bg-slate-900 shrink-0"
+                        title="Klik untuk membuka gambar ukuran penuh"
+                      >
+                        <img
+                          src={selectedStudent.initialPaymentProofUrl}
+                          alt="Bukti Transfer BAM"
+                          className="w-full h-full object-contain group-hover:scale-105 transition-transform"
+                          referrerPolicy="no-referrer"
+                        />
+                        <div className="absolute inset-0 bg-slate-950/40 opacity-0 group-hover:opacity-100 flex items-center justify-center text-white transition-opacity">
+                          <Eye className="w-4 h-4 text-amber-300" />
+                        </div>
+                      </a>
+                      <div className="text-xs text-slate-600 space-y-1">
+                        <div><span className="font-semibold">Tanggal Upload:</span> {selectedStudent.initialPaymentDate || '-'}</div>
+                        <div>
+                          <span className="font-semibold">Status BAM:</span>{' '}
+                          <span className="font-bold text-blue-700 uppercase">{selectedStudent.initialPaymentStatus || 'pending'}</span>
+                        </div>
+                        {selectedStudent.initialPaymentNotes && (
+                          <div className="text-slate-500 italic">"{selectedStudent.initialPaymentNotes}"</div>
+                        )}
+                        <a
+                          href={selectedStudent.initialPaymentProofUrl}
+                          download={`Bukti_BAM_${selectedStudent.registrationNumber}.jpg`}
+                          className="inline-flex items-center gap-1 text-[11px] font-bold text-blue-600 hover:text-blue-800 pt-1"
+                        >
+                          <Download className="w-3.5 h-3.5" />
+                          <span>Unduh Bukti BAM</span>
+                        </a>
                       </div>
                     </div>
                   </div>
